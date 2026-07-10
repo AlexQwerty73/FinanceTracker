@@ -1,0 +1,168 @@
+"""
+app/components/transaction_fields.py — TransactionFields: the shared
+date/type/category/amount/payment/notes inputs, used by both the add-form
+(left panel) and the edit dialog. Owns dropdown reloading when the selected
+date's year changes; owns no persistence or save button.
+"""
+from __future__ import annotations
+
+from datetime import date as Date
+
+from PyQt6.QtCore import QDate
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QComboBox, QDateEdit, QLabel, QLineEdit, QVBoxLayout, QWidget
+
+from core.excel import registry
+from core.themes import c
+
+
+def input_style() -> str:
+    return f"""
+        QLineEdit, QDateEdit, QComboBox {{
+            background:{c('in_bg')}; border:1px solid {c('in_bd')};
+            border-radius:8px; color:{c('t1')}; padding:0 10px;
+        }}
+        QLineEdit:focus, QDateEdit:focus, QComboBox:focus {{ border-color:{c('ac')}; }}
+        QComboBox::drop-down {{ border:none; width:22px; }}
+        QComboBox QAbstractItemView {{
+            background:{c('bg')}; color:{c('t1')}; selection-background-color:{c('btn_bg')};
+        }}
+    """
+
+
+def field_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setFont(QFont("Segoe UI", 9))
+    lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
+    return lbl
+
+
+class TransactionFields(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._loaded_year: int | None = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        lay.addWidget(field_label("Date"))
+        self._date = QDateEdit(QDate.currentDate())
+        self._date.setCalendarPopup(True)
+        self._date.setFixedHeight(34)
+        self._date.setStyleSheet(input_style())
+        self._date.dateChanged.connect(self._on_date_changed)
+        lay.addWidget(self._date)
+
+        lay.addWidget(field_label("Type"))
+        self._type_combo = QComboBox()
+        self._type_combo.setFixedHeight(34)
+        self._type_combo.setStyleSheet(input_style())
+        lay.addWidget(self._type_combo)
+
+        lay.addWidget(field_label("Category"))
+        self._category_combo = QComboBox()
+        self._category_combo.setFixedHeight(34)
+        self._category_combo.setStyleSheet(input_style())
+        lay.addWidget(self._category_combo)
+
+        lay.addWidget(field_label("Amount"))
+        self._amount_field = QLineEdit()
+        self._amount_field.setPlaceholderText("0.00")
+        self._amount_field.setFixedHeight(34)
+        self._amount_field.setStyleSheet(input_style())
+        lay.addWidget(self._amount_field)
+
+        self._payment_label = field_label("Payment type")
+        lay.addWidget(self._payment_label)
+        self._payment_combo = QComboBox()
+        self._payment_combo.setFixedHeight(34)
+        self._payment_combo.setStyleSheet(input_style())
+        lay.addWidget(self._payment_combo)
+
+        lay.addWidget(field_label("Notes"))
+        self._notes_field = QLineEdit()
+        self._notes_field.setPlaceholderText("Optional note...")
+        self._notes_field.setFixedHeight(34)
+        self._notes_field.setStyleSheet(input_style())
+        lay.addWidget(self._notes_field)
+
+        self._on_date_changed(self._date.date())
+
+    # ── year-driven dropdown reload ─────────────────────────────────────
+
+    def _on_date_changed(self, qdate: QDate) -> None:
+        year = qdate.year()
+        if year == self._loaded_year:
+            return
+        try:
+            schema = registry.get_schema_for_date(Date(year, 1, 1))
+        except ValueError:
+            self._type_combo.clear()
+            self._category_combo.clear()
+            self._payment_label.setVisible(False)
+            self._payment_combo.setVisible(False)
+            self._loaded_year = None
+            return
+
+        self._type_combo.clear()
+        self._type_combo.addItems(schema.get_types())
+        self._category_combo.clear()
+        self._category_combo.addItems(schema.get_categories())
+
+        payment_types = schema.get_payment_types()
+        has_payment = payment_types is not None
+        self._payment_label.setVisible(has_payment)
+        self._payment_combo.setVisible(has_payment)
+        if has_payment:
+            self._payment_combo.clear()
+            self._payment_combo.addItems(payment_types)
+
+        self._loaded_year = year
+
+    # ── getters ─────────────────────────────────────────────────────────
+
+    def get_date(self) -> Date:
+        q = self._date.date()
+        return Date(q.year(), q.month(), q.day())
+
+    def get_type(self) -> str:
+        return self._type_combo.currentText()
+
+    def get_category(self) -> str:
+        return self._category_combo.currentText()
+
+    def get_amount_text(self) -> str:
+        return self._amount_field.text()
+
+    def get_payment_type(self) -> str | None:
+        return self._payment_combo.currentText() if self._payment_combo.isVisible() else None
+
+    def get_note(self) -> str:
+        return self._notes_field.text().strip()
+
+    # ── setters (pre-fill for editing) ──────────────────────────────────
+
+    def set_date(self, year: int, month: int, day: int = 1) -> None:
+        self._date.setDate(QDate(year, month, day))
+
+    def set_values(self, tx: dict) -> None:
+        """Pre-fill fields from a transaction dict (as returned by
+        transactions_for_month). Call set_date() first if tx["date"] is None
+        (2025 has no date column) so the year-dependent dropdowns load."""
+        if tx.get("date") is not None:
+            d = tx["date"]
+            self.set_date(d.year, d.month, d.day)
+        self._type_combo.setCurrentText(tx.get("type") or "")
+        self._category_combo.setCurrentText(tx.get("category") or "")
+        amount = tx.get("amount")
+        if amount is not None:
+            self._amount_field.setText(f"{amount:g}")
+        payment_type = tx.get("payment_type")
+        if payment_type and self._payment_combo.isVisible():
+            self._payment_combo.setCurrentText(payment_type)
+        self._notes_field.setText(tx.get("note") or "")
+
+    def clear_amount_and_note(self) -> None:
+        self._amount_field.clear()
+        self._notes_field.clear()
