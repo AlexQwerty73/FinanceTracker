@@ -21,7 +21,6 @@ build/
 *.spec
 *.exe
 *.app
-icon.ico
 
 # IDE / editor
 .vscode/

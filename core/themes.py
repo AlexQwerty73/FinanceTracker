@@ -26,6 +26,27 @@ _PALETTE: dict[str, str] = {
     "chart_line": "#3a3a58",
 }
 
+# Fixed-order categorical hues for multi-category charts (pies), distinct
+# from the semantic income/expense/invest colors used elsewhere. Assigned in
+# order, never cycled; the last slot is reserved for the "Other" bucket.
+CATEGORICAL: list[str] = [
+    "#f0a500",  # gold
+    "#6ca6f0",  # blue
+    "#e07bb0",  # magenta
+    "#9f8ef0",  # violet
+    "#4fc9c2",  # teal
+    "#f0834a",  # orange
+    "#cbb26a",  # sand
+]
+CATEGORICAL_OTHER = "#7a7f99"  # muted gray, reserved for the "Other" bucket
+
+# Discrete (bucketed, not a smooth gradient) sequential scale for the
+# calendar heatmap — 5 steps: no activity, then 4 quartile levels rising
+# from muted gold to a hot orange-red, chosen for strong contrast between
+# adjacent buckets so activity actually pops out (a smooth gradient made
+# most cells look like near-indistinguishable shades of the same brown).
+HEATMAP_BUCKETS: list[str] = ["#22223a", "#7a5f10", "#c98500", "#f0a500", "#ff6a2b"]
+
 
 def c(key: str) -> str:
     return _PALETTE[key]

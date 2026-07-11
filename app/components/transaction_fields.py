@@ -10,10 +10,13 @@ from datetime import date as Date
 
 from PyQt6.QtCore import QDate
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QComboBox, QDateEdit, QLabel, QLineEdit, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QDateEdit, QLabel, QLineEdit, QVBoxLayout, QWidget
 
+from core import prefs
 from core.excel import registry
 from core.themes import c
+
+from .widgets import NoWheelComboBox
 
 
 def input_style() -> str:
@@ -38,9 +41,11 @@ def field_label(text: str) -> QLabel:
 
 
 class TransactionFields(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, remember_payment: bool = False):
         super().__init__(parent)
         self._loaded_year: int | None = None
+        self._remember_payment = remember_payment
+        self._has_payment_field = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -55,13 +60,13 @@ class TransactionFields(QWidget):
         lay.addWidget(self._date)
 
         lay.addWidget(field_label("Type"))
-        self._type_combo = QComboBox()
+        self._type_combo = NoWheelComboBox()
         self._type_combo.setFixedHeight(34)
         self._type_combo.setStyleSheet(input_style())
         lay.addWidget(self._type_combo)
 
         lay.addWidget(field_label("Category"))
-        self._category_combo = QComboBox()
+        self._category_combo = NoWheelComboBox()
         self._category_combo.setFixedHeight(34)
         self._category_combo.setStyleSheet(input_style())
         lay.addWidget(self._category_combo)
@@ -75,7 +80,7 @@ class TransactionFields(QWidget):
 
         self._payment_label = field_label("Payment type")
         lay.addWidget(self._payment_label)
-        self._payment_combo = QComboBox()
+        self._payment_combo = NoWheelComboBox()
         self._payment_combo.setFixedHeight(34)
         self._payment_combo.setStyleSheet(input_style())
         lay.addWidget(self._payment_combo)
@@ -102,6 +107,7 @@ class TransactionFields(QWidget):
             self._category_combo.clear()
             self._payment_label.setVisible(False)
             self._payment_combo.setVisible(False)
+            self._has_payment_field = False
             self._loaded_year = None
             return
 
@@ -112,11 +118,19 @@ class TransactionFields(QWidget):
 
         payment_types = schema.get_payment_types()
         has_payment = payment_types is not None
+        self._has_payment_field = has_payment
         self._payment_label.setVisible(has_payment)
         self._payment_combo.setVisible(has_payment)
         if has_payment:
             self._payment_combo.clear()
             self._payment_combo.addItems(payment_types)
+            last = prefs.get_last_payment_type(year) if self._remember_payment else None
+            # Default to Card over whatever the list's own first entry is
+            # (e.g. 2026's "Lists" sheet has Cash first) — Card is the more
+            # common case, so it should be the default rather than Cash.
+            preferred = last if last in payment_types else ("Card" if "Card" in payment_types else None)
+            if preferred:
+                self._payment_combo.setCurrentText(preferred)
 
         self._loaded_year = year
 
@@ -136,7 +150,7 @@ class TransactionFields(QWidget):
         return self._amount_field.text()
 
     def get_payment_type(self) -> str | None:
-        return self._payment_combo.currentText() if self._payment_combo.isVisible() else None
+        return self._payment_combo.currentText() if self._has_payment_field else None
 
     def get_note(self) -> str:
         return self._notes_field.text().strip()
@@ -159,7 +173,7 @@ class TransactionFields(QWidget):
         if amount is not None:
             self._amount_field.setText(f"{amount:g}")
         payment_type = tx.get("payment_type")
-        if payment_type and self._payment_combo.isVisible():
+        if payment_type and self._has_payment_field:
             self._payment_combo.setCurrentText(payment_type)
         self._notes_field.setText(tx.get("note") or "")
 

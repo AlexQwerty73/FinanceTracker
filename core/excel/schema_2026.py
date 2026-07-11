@@ -23,7 +23,7 @@ from . import workbook_io
 from ._formula import amount_value
 from ._match import amounts_close, same_date
 from ._rows import find_empty_row, find_next_open_row
-from .base import MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema
+from .base import CategoryExistsError, MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema
 
 DATA_START_ROW = 2
 MAX_DATA_ROW = 54  # binding constraint: SUMIF(B2:B54,...) totals
@@ -38,6 +38,7 @@ LISTS_CATEGORIES_COL, LISTS_TYPES_COL, LISTS_PAYMENT_COL = 1, 2, 3
 
 INVEST_CATEGORIES = {"Crypto", "Stocks"}
 INCOME_TYPE, EXPENSE_TYPE = "Income", "Expense"
+CASH_IN_TYPE = "To Cash"  # matches the sheet's own Q10 cash-in formula
 
 
 def _read_list_column(ws, col: int) -> list[str]:
@@ -79,6 +80,8 @@ def _find_alldata_row_by_content(ws_all, date_val, type_: str, category: str, am
 
 class Schema2026(YearSchema):
     EXPENSE_TYPE = EXPENSE_TYPE
+    INCOME_TYPE = INCOME_TYPE
+    CASH_IN_TYPE = CASH_IN_TYPE
 
     def get_categories(self) -> list[str]:
         wb = workbook_io.load(self.file_path, data_only=False)
@@ -91,6 +94,47 @@ class Schema2026(YearSchema):
     def get_payment_types(self) -> list[str] | None:
         wb = workbook_io.load(self.file_path, data_only=False)
         return _read_list_column(wb[LISTS_SHEET], LISTS_PAYMENT_COL)
+
+    def add_category(self, name: str) -> None:
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws = wb[LISTS_SHEET]
+        existing = _read_list_column(ws, LISTS_CATEGORIES_COL)
+        if any(name.lower() == e.lower() for e in existing):
+            raise CategoryExistsError(f'Category "{name}" already exists.')
+        row = find_next_open_row(ws, 2, LISTS_CATEGORIES_COL)
+        ws.cell(row=row, column=LISTS_CATEGORIES_COL).value = name
+        workbook_io.save(wb, self.file_path)
+
+    def rename_category(self, old_name: str, new_name: str) -> int:
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_lists = wb[LISTS_SHEET]
+        existing = _read_list_column(ws_lists, LISTS_CATEGORIES_COL)
+        if new_name != old_name and any(new_name.lower() == e.lower() for e in existing):
+            raise CategoryExistsError(f'Category "{new_name}" already exists.')
+
+        for row in range(2, 2 + len(existing)):
+            if ws_lists.cell(row=row, column=LISTS_CATEGORIES_COL).value == old_name:
+                ws_lists.cell(row=row, column=LISTS_CATEGORIES_COL).value = new_name
+                break
+
+        count = 0
+        for month_name in MONTH_NAMES:
+            ws = wb[month_name]
+            for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
+                if ws.cell(row=row, column=COL_CATEGORY).value == old_name:
+                    ws.cell(row=row, column=COL_CATEGORY).value = new_name
+                    count += 1
+
+        ws_all = wb[ALLDATA_SHEET]
+        end = max(ws_all.max_row, DATA_START_ROW)
+        for row in range(DATA_START_ROW, end + 1):
+            if ws_all.cell(row=row, column=ALL_COL_CATEGORY).value == old_name:
+                ws_all.cell(row=row, column=ALL_COL_CATEGORY).value = new_name
+
+        workbook_io.save(wb, self.file_path)
+        return count
 
     # ── internal: operate on an already-open workbook, no load/save ────────
 
@@ -152,6 +196,7 @@ class Schema2026(YearSchema):
         payment_type: str | None, note: str,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
         self._write_transaction(wb, date, type_, category, amount, payment_type, note)
         workbook_io.save(wb, self.file_path)
 
@@ -160,12 +205,14 @@ class Schema2026(YearSchema):
         payment_type: str | None, note: str,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
         self._clear_transaction(wb, tx)
         self._write_transaction(wb, date, type_, category, amount, payment_type, note)
         workbook_io.save(wb, self.file_path)
 
     def delete_transaction(self, tx: dict) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
         self._clear_transaction(wb, tx)
         workbook_io.save(wb, self.file_path)
 
@@ -173,13 +220,14 @@ class Schema2026(YearSchema):
         wb = workbook_io.load(self.file_path, data_only=False)
         ws = wb[MONTH_NAMES[month - 1]]
 
-        income = expense = invest = 0.0
+        income = expense = invest = cash = 0.0
         for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
             t = ws.cell(row=row, column=COL_TYPE).value
             if t is None:
                 continue
             amount = amount_value(ws.cell(row=row, column=COL_AMOUNT).value) or 0
             category = ws.cell(row=row, column=COL_CATEGORY).value
+            payment = ws.cell(row=row, column=COL_PAYMENT).value
             if t == INCOME_TYPE:
                 income += amount
             elif t == EXPENSE_TYPE:
@@ -187,11 +235,22 @@ class Schema2026(YearSchema):
             if category in INVEST_CATEGORIES:
                 invest += amount
 
+            if self.is_cash_in_type(t):
+                cash += amount
+            elif t == EXPENSE_TYPE and payment == "Cash":
+                cash -= amount
+
+        balance = income - expense
+        has_tracking = self.has_cash_tracking()
         return {
             "income": income,
             "expense": expense,
             "invest": invest,
-            "balance": income - expense,
+            "balance": balance,
+            "cash": cash if has_tracking else None,
+            # See Schema2025.month_summary — card is derived (balance minus
+            # cash), not tagged from individual rows.
+            "card": (balance - cash) if has_tracking else None,
         }
 
     def transactions_for_month(self, month: int) -> list[dict]:

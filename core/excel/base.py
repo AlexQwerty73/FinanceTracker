@@ -23,20 +23,59 @@ class TransactionNotFoundError(Exception):
     the file changed (externally, or a stale dashboard) since it was read."""
 
 
+class CategoryExistsError(Exception):
+    """Raised when adding a category that (case-insensitively) already exists."""
+
+
 class YearSchema(ABC):
     EXPENSE_TYPE: str = ""
+    INCOME_TYPE: str = ""
+    CASH_IN_TYPE: str | None = None  # the type that moves money *into* cash (e.g. "To Cash"); None if not tracked
+    HAS_DAILY_DATES: bool = True  # False for years with no Date column (e.g. 2025)
 
     def __init__(self, file_path: Path, year: int):
         self.file_path = file_path
         self.year = year
 
     def is_expense_type(self, type_: str) -> bool:
-        """Whether `type_` counts as an expense (used for the category-breakdown chart)."""
+        """Whether `type_` counts as an expense (used for charts)."""
         return type_ == self.EXPENSE_TYPE
+
+    def is_income_type(self, type_: str) -> bool:
+        """Whether `type_` counts as income (used for charts)."""
+        return type_ == self.INCOME_TYPE
+
+    def is_cash_in_type(self, type_: str) -> bool:
+        """Whether `type_` moves money into cash (e.g. a "To Cash" transfer —
+        matches the sheet's own Q10 cash-in formula, which is NOT the same
+        as its Income type)."""
+        return self.CASH_IN_TYPE is not None and type_ == self.CASH_IN_TYPE
+
+    def is_cash_out_type(self, type_: str) -> bool:
+        """Whether `type_` alone (with no payment-type field to check, e.g.
+        2025) identifies a cash expense. Years that track cash via a
+        Payment type column instead (e.g. 2026) leave this False always —
+        cash-out there is `is_expense_type(type_) and payment_type == "Cash"`."""
+        return False
+
+    def has_cash_tracking(self) -> bool:
+        """Whether this year's schema can compute a cash-flow figure at all."""
+        return self.CASH_IN_TYPE is not None
 
     @abstractmethod
     def get_categories(self) -> list[str]:
         """Categories for the dropdown, in sheet order."""
+
+    @abstractmethod
+    def add_category(self, name: str) -> None:
+        """Append a new category. Raises CategoryExistsError if it already exists."""
+
+    @abstractmethod
+    def rename_category(self, old_name: str, new_name: str) -> int:
+        """Rename a category everywhere it appears (the category list itself,
+        every month sheet, and AllData where applicable). Returns the number
+        of transaction rows updated. Raises CategoryExistsError if new_name
+        already exists as a different category."""
 
     @abstractmethod
     def get_types(self) -> list[str]:
@@ -80,8 +119,19 @@ class YearSchema(ABC):
 
     @abstractmethod
     def month_summary(self, month: int) -> dict:
-        """Return {"income": float, "expense": float, "invest": float, "balance": float}
-        for the given month (1-12), computed from raw cell values."""
+        """Return {"income": float, "expense": float, "invest": float, "balance": float,
+        "cash": float | None, "card": float | None, "untracked": float | None}
+        for the given month (1-12), computed from raw cell values.
+
+        "cash" is the month's net cash movement (cash-in/cash-out
+        type+payment detection). "card" is *derived*, not tagged from
+        individual rows — it's balance - cash, i.e. whatever of the
+        month's income/expense didn't move through cash. Most rows have no
+        recorded payment method (especially 2025's older data, all
+        predating the Payment column), so a tagged-only figure would stay
+        at 0 nearly everywhere and tell you nothing; the derived figure at
+        least moves with the month's real activity. Both are None if this
+        year has no cash tracking at all (has_cash_tracking() is False)."""
 
     @abstractmethod
     def transactions_for_month(self, month: int) -> list[dict]:

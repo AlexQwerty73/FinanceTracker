@@ -48,7 +48,7 @@ echo [3/3] Building...
 echo.
 
 if exist icon.ico (
-    python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --icon "icon.ico" --hidden-import "PyQt6.sip" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
+    python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --icon "icon.ico" --add-data "icon.ico;." --hidden-import "PyQt6.sip" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
 ) else (
     python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --hidden-import "PyQt6.sip" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
 )
