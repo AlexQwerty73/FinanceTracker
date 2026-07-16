@@ -19,10 +19,13 @@ from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QStackedWidget, QVBoxLayou
 from core.themes import c
 from core.watcher import FileWatcher
 
+from .components.create_file_dialog import CreateFileDialog
+from .components.manage_files_dialog import ManageFilesDialog
 from .components.topbar import TopBar
 from .pages.analytics_page import AnalyticsPage
 from .pages.categories_page import CategoriesPage
 from .pages.dashboard_page import DashboardPage
+from .pages.templates_page import TemplatesPage
 from .pages.transactions_page import TransactionsPage
 
 _DEBOUNCE_MS = 2000
@@ -31,6 +34,7 @@ PG_DASHBOARD = 0
 PG_TRANSACTIONS = 1
 PG_ANALYTICS = 2
 PG_CATEGORIES = 3
+PG_TEMPLATES = 4
 
 
 class App(QWidget):
@@ -45,6 +49,7 @@ class App(QWidget):
         self._transactions_page = TransactionsPage()
         self._analytics_page = AnalyticsPage()
         self._categories_page = CategoriesPage()
+        self._templates_page = TemplatesPage()
         self._dashboard_page.view_all_clicked.connect(lambda: self._show_page(PG_TRANSACTIONS))
         self._transactions_page.analytics_clicked.connect(lambda: self._show_page(PG_ANALYTICS))
 
@@ -53,6 +58,7 @@ class App(QWidget):
         self._stack.addWidget(self._transactions_page)  # PG_TRANSACTIONS
         self._stack.addWidget(self._analytics_page)     # PG_ANALYTICS
         self._stack.addWidget(self._categories_page)    # PG_CATEGORIES
+        self._stack.addWidget(self._templates_page)     # PG_TEMPLATES
 
         self._topbar = TopBar()
         self._topbar.period_changed.connect(self._on_period_changed)
@@ -98,6 +104,7 @@ class App(QWidget):
             ("\U0001F4CB", "Transactions", PG_TRANSACTIONS),
             ("\U0001F4C8", "Analytics", PG_ANALYTICS),
             ("\U0001F3F7", "Categories", PG_CATEGORIES),
+            ("\U0001F9E9", "Templates", PG_TEMPLATES),
         ]:
             btn = QPushButton(emoji)
             btn.setFixedSize(48, 44)
@@ -109,6 +116,33 @@ class App(QWidget):
             lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         lay.addStretch()
+
+        create_file_btn = QPushButton("\U0001F4C1")  # folder emoji — not a page, opens a dialog
+        create_file_btn.setFixedSize(48, 44)
+        create_file_btn.setFont(QFont("Segoe UI", 16))
+        create_file_btn.setToolTip("Create a new finances file")
+        create_file_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        create_file_btn.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{c('t2')};
+                border:1px solid transparent; border-radius:10px; }}
+            QPushButton:hover {{ background:{c('in_bg')}; color:{c('t1')}; }}
+        """)
+        create_file_btn.clicked.connect(self._on_create_file)
+        lay.addWidget(create_file_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        manage_files_btn = QPushButton("⚙")  # gear emoji — not a page, opens a dialog
+        manage_files_btn.setFixedSize(48, 44)
+        manage_files_btn.setFont(QFont("Segoe UI", 16))
+        manage_files_btn.setToolTip("Manage files — see and move where each year's file lives")
+        manage_files_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        manage_files_btn.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{c('t2')};
+                border:1px solid transparent; border-radius:10px; }}
+            QPushButton:hover {{ background:{c('in_bg')}; color:{c('t1')}; }}
+        """)
+        manage_files_btn.clicked.connect(self._on_manage_files)
+        lay.addWidget(manage_files_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
         self._style_nav_buttons()
         return sb
 
@@ -145,6 +179,27 @@ class App(QWidget):
 
     def _refresh_current(self) -> None:
         self._on_period_changed(self._topbar.year, self._topbar.month)
+
+    def _on_create_file(self) -> None:
+        dlg = CreateFileDialog(parent=self)
+        dlg.file_created.connect(self._on_file_created)
+        dlg.manage_templates_requested.connect(lambda: self._show_page(PG_TEMPLATES))
+        dlg.exec()
+
+    def _on_file_created(self, year: int) -> None:
+        self._watcher.rewatch()  # start watching the new file's folder too
+        self._analytics_page.refresh_years()
+        self._categories_page.refresh_years()
+        self._refresh_current()
+
+    def _on_manage_files(self) -> None:
+        dlg = ManageFilesDialog(parent=self)
+        dlg.files_changed.connect(self._on_files_changed)
+        dlg.exec()
+
+    def _on_files_changed(self) -> None:
+        self._watcher.rewatch()  # a move can put a file in a not-yet-watched folder
+        self._refresh_current()
 
     def closeEvent(self, e):
         self._watcher.stop()

@@ -45,3 +45,6 @@ htmlcov/
 # Temporary files
 *.tmp
 *.bak
+
+# Local-only Claude working notes — not project docs, not for other contributors
+CLAUDE.md

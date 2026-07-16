@@ -185,6 +185,18 @@ class AnalyticsPage(QWidget):
         pies_row.addWidget(income_pie_box, 1)
         lay.addLayout(pies_row)
 
+    def refresh_years(self) -> None:
+        """Repopulate the Heatmap year dropdown — call after a new year's
+        file is created via CreateFileDialog, since registry.supported_years()
+        can grow at runtime and this combo was only populated once at init."""
+        current = self._year_combo.currentText()
+        self._year_combo.blockSignals(True)
+        self._year_combo.clear()
+        self._year_combo.addItems([str(y) for y in registry.supported_years()])
+        if self._year_combo.findText(current) >= 0:
+            self._year_combo.setCurrentText(current)
+        self._year_combo.blockSignals(False)
+
     def _on_controls_changed(self, _text: str = "") -> None:
         self.refresh(self._year, self._month)
 
@@ -229,7 +241,7 @@ class AnalyticsPage(QWidget):
                         schema, txs, y, m, has_cash_tracking, period_start,
                         balance_points, cash_points, card_points, balance_total, cash_total, card_total,
                     )
-        except WorkbookLockedError as exc:
+        except (ValueError, WorkbookLockedError) as exc:
             self._status.setText(str(exc))
             return
 

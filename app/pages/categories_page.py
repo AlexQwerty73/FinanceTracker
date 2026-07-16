@@ -143,6 +143,18 @@ class CategoriesPage(QWidget):
         self._status.setStyleSheet(f"color:{c('err_c') if error else c('income_c')}; background:transparent;")
         self._status.setText(text)
 
+    def refresh_years(self) -> None:
+        """Repopulate the Year dropdown — call after a new year's file is
+        created via CreateFileDialog, since registry.supported_years() can
+        grow at runtime and this combo was only populated once at init."""
+        current = self._year_combo.currentText()
+        self._year_combo.blockSignals(True)
+        self._year_combo.clear()
+        self._year_combo.addItems([str(y) for y in registry.supported_years()])
+        if self._year_combo.findText(current) >= 0:
+            self._year_combo.setCurrentText(current)
+        self._year_combo.blockSignals(False)
+
     def _on_year_changed(self, text: str) -> None:
         if text:
             self._year = int(text)
