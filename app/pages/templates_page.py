@@ -44,20 +44,23 @@ from __future__ import annotations
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
+    QAbstractItemView, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QPushButton, QSizePolicy, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.excel import template_model
 from core.excel.template_model import (
-    OPTIONAL_ROLES, REQUIRED_ROLES, ROLE_AMOUNT, ROLE_CATEGORY, ROLE_DATE,
+    OPTIONAL_ROLES, REQUIRED_ROLES, ROLE_AMOUNT, ROLE_CATEGORY, ROLE_CURRENCY, ROLE_DATE,
     ROLE_LABELS, ROLE_NOTES, ROLE_PAYMENT, ROLE_TYPE, Template, TemplateValidationError,
 )
-from core.themes import c
+from core.icons import icon
+from core.themes import FIELD_HEIGHT, c, font_size, radius
 
 from ..components.transaction_fields import field_label, input_style
-from ..components.widgets import NoWheelComboBox, bordered_box
+from ..components.widgets import (
+    NoWheelComboBox, bordered_box, card as _base_card, primary_button, scrollable_area,
+)
 
 _PREVIEW_ROWS = 4
 _START_BLANK = "__blank__"
@@ -70,27 +73,16 @@ _ROLE_CASH_IN = "Cash-in transfer"
 _TYPE_ROLE_OPTIONS = [_ROLE_NONE, _ROLE_INCOME, _ROLE_EXPENSE, _ROLE_CASH_IN]
 
 
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-    lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-    return lbl
-
-
 def _helper_text(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setWordWrap(True)
-    lbl.setFont(QFont("Segoe UI", 8))
+    lbl.setFont(QFont("Segoe UI", font_size("micro")))
     lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
     return lbl
 
 
 def _card(title: str, helper: str | None = None) -> tuple[QWidget, QVBoxLayout]:
-    box = bordered_box(c("panel_bg"), c("panel_bd"), radius=14)
-    lay = QVBoxLayout(box)
-    lay.setContentsMargins(20, 16, 20, 16)
-    lay.setSpacing(8)
-    lay.addWidget(_section_label(title))
+    box, lay = _base_card(title)
     if helper:
         lay.addWidget(_helper_text(helper))
     return box, lay
@@ -102,7 +94,7 @@ def _small_btn(text: str) -> QPushButton:
     btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     btn.setStyleSheet(f"""
         QPushButton {{ background:transparent; color:{c('t2')};
-            border:1px solid {c('in_bd')}; border-radius:6px; padding:0 10px; }}
+            border:1px solid {c('in_bd')}; border-radius:{radius('sm')}px; padding:0 10px; }}
         QPushButton:hover {{ color:{c('t1')}; border-color:{c('t2')}; }}
         QPushButton:disabled {{ color:{c('t3')}; border-color:{c('sep')}; }}
     """)
@@ -123,29 +115,30 @@ def _pill_btn(text: str) -> QPushButton:
 
 
 def _remove_btn(tooltip: str = "Remove") -> QPushButton:
-    btn = QPushButton("✕")
+    btn = QPushButton()
+    btn.setIcon(icon("close", c("t3")))
+    btn.setIconSize(QSize(12, 12))
     btn.setFixedSize(22, 22)
     btn.setToolTip(tooltip)
     btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     btn.setStyleSheet(f"""
-        QPushButton {{ background:transparent; color:{c('t3')}; border:none;
-            border-radius:5px; font-weight:bold; }}
-        QPushButton:hover {{ background:{c('err_c')}; color:white; }}
+        QPushButton {{ background:transparent; border:none; border-radius:{radius('sm') - 1}px; }}
+        QPushButton:hover {{ background:{c('err_c')}; }}
     """)
     return btn
 
 
 def _stat_chip() -> tuple[QWidget, QLabel, QLabel]:
     """A small 'Income / 1 500.00'-style readout used in the totals strip."""
-    box = bordered_box(c("in_bg"), c("in_bd"), radius=10)
+    box = bordered_box(c("in_bg"), c("in_bd"), radius=radius("lg"))
     lay = QVBoxLayout(box)
     lay.setContentsMargins(10, 6, 10, 6)
     lay.setSpacing(2)
     title_lbl = QLabel("")
-    title_lbl.setFont(QFont("Segoe UI", 8))
+    title_lbl.setFont(QFont("Segoe UI", font_size("micro")))
     title_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
     value_lbl = QLabel("0.00")
-    value_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+    value_lbl.setFont(QFont("Segoe UI", font_size("stat"), QFont.Weight.Bold))
     value_lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
     lay.addWidget(title_lbl)
     lay.addWidget(value_lbl)
@@ -438,20 +431,9 @@ class TemplatesPage(QWidget):
         outer_lay = QVBoxLayout(self)
         outer_lay.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(f"""
-            QScrollArea {{ background:transparent; border:none; }}
-            QScrollBar:vertical {{ background:transparent; width:8px; }}
-            QScrollBar::handle:vertical {{ background:{c('in_bd')}; border-radius:4px; min-height:24px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
-        """)
-        outer_lay.addWidget(scroll)
-
         content = QWidget()
         content.setStyleSheet("background:transparent;")
-        scroll.setWidget(content)
+        outer_lay.addWidget(scrollable_area(content))
 
         lay = QVBoxLayout(content)
         lay.setContentsMargins(4, 4, 4, 20)
@@ -459,7 +441,7 @@ class TemplatesPage(QWidget):
 
         header_row = QHBoxLayout()
         hdr = QLabel("Templates")
-        hdr.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        hdr.setFont(QFont("Segoe UI", font_size("title"), QFont.Weight.Bold))
         hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         header_row.addWidget(hdr)
         header_row.addStretch()
@@ -477,11 +459,11 @@ class TemplatesPage(QWidget):
         start_box, start_lay = _card("Start from (optional)")
         start_row = QHBoxLayout()
         self._start_combo = NoWheelComboBox()
-        self._start_combo.setFixedHeight(34)
+        self._start_combo.setFixedHeight(FIELD_HEIGHT)
         self._start_combo.setStyleSheet(input_style())
         start_row.addWidget(self._start_combo, 1)
         load_btn = _small_btn("Load")
-        load_btn.setFixedHeight(34)
+        load_btn.setFixedHeight(FIELD_HEIGHT)
         load_btn.clicked.connect(self._on_load_start)
         start_row.addWidget(load_btn)
         start_lay.addLayout(start_row)
@@ -500,7 +482,7 @@ class TemplatesPage(QWidget):
 
         name_box, name_lay = _card("1 · Template name")
         self._name_field = QLineEdit("My Template")
-        self._name_field.setFixedHeight(34)
+        self._name_field.setFixedHeight(FIELD_HEIGHT)
         self._name_field.setStyleSheet(input_style())
         self._name_field.textChanged.connect(self._refresh_preview)
         name_lay.addWidget(self._name_field)
@@ -572,6 +554,25 @@ class TemplatesPage(QWidget):
         payment_lay.addWidget(self._payment_editor)
         editor_col.addWidget(self._payment_box)
 
+        self._currency_box, currency_lay = _card(
+            "7 · Currencies (optional)",
+            "Which currencies you enter amounts in, e.g. CZK, USD. Pick one as the base "
+            "currency — that's what Dashboard/Analytics totals convert everything into. "
+            "Exchange rates themselves aren't set here — they live in the file's own Lists "
+            "sheet and are edited directly in Excel, so the preview totals below don't "
+            "convert between currencies.",
+        )
+        self._currency_editor = _ListEditor("New currency, e.g. USD…")
+        self._currency_editor.changed.connect(self._on_currencies_changed)
+        currency_lay.addWidget(self._currency_editor)
+        currency_lay.addWidget(field_label("Base currency"))
+        self._base_currency_combo = NoWheelComboBox()
+        self._base_currency_combo.setFixedHeight(FIELD_HEIGHT)
+        self._base_currency_combo.setStyleSheet(input_style())
+        self._base_currency_combo.currentTextChanged.connect(self._refresh_preview)
+        currency_lay.addWidget(self._base_currency_combo)
+        editor_col.addWidget(self._currency_box)
+
         body.addLayout(editor_col, 1)
 
         # ── Live preview ─────────────────────────────────────────────────
@@ -589,7 +590,7 @@ class TemplatesPage(QWidget):
             tab_lbl = QLabel(month_name)
             tab_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             tab_lbl.setFixedHeight(20)
-            tab_lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold if i == 0 else QFont.Weight.Normal))
+            tab_lbl.setFont(QFont("Segoe UI", font_size("micro"), QFont.Weight.Bold if i == 0 else QFont.Weight.Normal))
             if i == 0:
                 tab_lbl.setStyleSheet(f"""
                     background:{c('btn_bg')}; color:{c('ac')};
@@ -597,7 +598,7 @@ class TemplatesPage(QWidget):
                 """)
             else:
                 tab_lbl.setStyleSheet(f"""
-                    background:{c('in_bg')}; color:{c('t3')};
+                    background:{c('in_bg')}; color:{c('t2')};
                     border:1px solid {c('in_bd')}; border-radius:4px; padding:2px 6px;
                 """)
             tabs_row.addWidget(tab_lbl)
@@ -634,7 +635,7 @@ class TemplatesPage(QWidget):
         preview_lay.addLayout(summary_row)
         summary_note = QLabel("Totals as computed on the Dashboard for a month with these sample rows.")
         summary_note.setWordWrap(True)
-        summary_note.setFont(QFont("Segoe UI", 8))
+        summary_note.setFont(QFont("Segoe UI", font_size("micro")))
         summary_note.setStyleSheet(f"color:{c('t3')}; background:transparent;")
         preview_lay.addWidget(summary_note)
 
@@ -646,17 +647,10 @@ class TemplatesPage(QWidget):
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
-        self._status.setFont(QFont("Segoe UI", 9))
+        self._status.setFont(QFont("Segoe UI", font_size("label")))
         lay.addWidget(self._status)
 
-        save_btn = QPushButton("Save as New Template")
-        save_btn.setFixedHeight(36)
-        save_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        save_btn.setStyleSheet(f"""
-            QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-                border:1px solid {c('btn_bd')}; border-radius:8px; font-weight:bold; }}
-            QPushButton:hover {{ background:{c('btn_hbg')}; }}
-        """)
+        save_btn = primary_button("Save as New Template")
         save_btn.clicked.connect(self._on_save)
         lay.addWidget(save_btn)
 
@@ -694,8 +688,15 @@ class TemplatesPage(QWidget):
             self._payment_editor.set_values(template.payment_types)
         else:
             self._payment_editor.set_values([])
+        if template.currencies:
+            self._currency_editor.set_values(template.currencies)
+            if template.base_currency in template.currencies:
+                self._base_currency_combo.setCurrentText(template.base_currency)
+        else:
+            self._currency_editor.set_values([])
         self._refresh_add_column_row()
         self._update_payment_visibility()
+        self._update_currency_visibility()
         self._refresh_preview()
 
     # ── columns ──────────────────────────────────────────────────────────
@@ -708,15 +709,16 @@ class TemplatesPage(QWidget):
         h = QHBoxLayout(w)
         h.setContentsMargins(8, 0, 4, 0)
         h.setSpacing(6)
-        handle = QLabel("⋮⋮")
-        handle.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        handle = QLabel()
+        handle.setPixmap(icon("drag-handle", c("t3")).pixmap(QSize(14, 14)))
+        handle.setStyleSheet("background:transparent;")
         h.addWidget(handle)
         lbl = QLabel(ROLE_LABELS[role])
         lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         h.addWidget(lbl, 1)
         if role in REQUIRED_ROLES:
             tag = QLabel("required")
-            tag.setFont(QFont("Segoe UI", 7))
+            tag.setFont(QFont("Segoe UI", font_size("micro") - 1))
             tag.setStyleSheet(f"color:{c('t3')}; background:{c('bg')}; border-radius:4px; padding:2px 8px;")
             h.addWidget(tag)
         else:
@@ -754,6 +756,7 @@ class TemplatesPage(QWidget):
         self._add_column_item(role)
         self._refresh_add_column_row()
         self._update_payment_visibility()
+        self._update_currency_visibility()
         self._refresh_preview()
 
     def _on_remove_column(self, role: str) -> None:
@@ -765,6 +768,7 @@ class TemplatesPage(QWidget):
                 break
         self._refresh_add_column_row()
         self._update_payment_visibility()
+        self._update_currency_visibility()
         self._refresh_preview()
 
     def _on_columns_reordered(self, *_args) -> None:
@@ -773,6 +777,21 @@ class TemplatesPage(QWidget):
     def _update_payment_visibility(self) -> None:
         has_payment = ROLE_PAYMENT in self._current_columns()
         self._payment_box.setVisible(has_payment)
+
+    def _update_currency_visibility(self) -> None:
+        has_currency = ROLE_CURRENCY in self._current_columns()
+        self._currency_box.setVisible(has_currency)
+
+    def _on_currencies_changed(self) -> None:
+        currencies = self._currency_editor.values()
+        current = self._base_currency_combo.currentText()
+        self._base_currency_combo.blockSignals(True)
+        self._base_currency_combo.clear()
+        self._base_currency_combo.addItems(currencies)
+        if current in currencies:
+            self._base_currency_combo.setCurrentText(current)
+        self._base_currency_combo.blockSignals(False)
+        self._refresh_preview()
 
     def _on_categories_changed(self) -> None:
         self._invest_editor.refresh_categories(self._categories_editor.values())
@@ -788,6 +807,7 @@ class TemplatesPage(QWidget):
         categories = self._categories_editor.values() or ["(category)"]
         types = self._types_editor.types() or ["(type)"]
         payments = self._payment_editor.values() or ["Cash"]
+        currencies = self._currency_editor.values() or ["CZK"]
         sample_dates = ["2026-01-05", "2026-01-12", "2026-01-18", "2026-01-27"]
         sample_amounts = [1200.00, 85.50, 300.00, 42.00]
         sample_notes = ["monthly pay", "", "groceries", ""]
@@ -797,12 +817,14 @@ class TemplatesPage(QWidget):
         cash_in_type = self._types_editor.cash_in_type()
         invest_categories = set(self._invest_editor.values())
         has_payment_col = ROLE_PAYMENT in columns
+        has_currency_col = ROLE_CURRENCY in columns
 
         income = expense = invest = cash = 0.0
         for row in range(_PREVIEW_ROWS):
             row_type = types[row % len(types)]
             row_amount = sample_amounts[row % len(sample_amounts)]
             row_payment = payments[row % len(payments)] if has_payment_col else None
+            row_currency = currencies[row % len(currencies)] if has_currency_col else None
             row_category = categories[row % len(categories)]
 
             for col, role in enumerate(columns):
@@ -816,6 +838,8 @@ class TemplatesPage(QWidget):
                     value = f"{row_amount:.2f}"
                 elif role == ROLE_PAYMENT:
                     value = row_payment
+                elif role == ROLE_CURRENCY:
+                    value = row_currency
                 elif role == ROLE_NOTES:
                     value = sample_notes[row % len(sample_notes)]
                 else:
@@ -884,6 +908,12 @@ class TemplatesPage(QWidget):
         template.cash_in_type = self._types_editor.cash_in_type()
         template.payment_types = self._payment_editor.values() if ROLE_PAYMENT in template.columns else None
         template.invest_categories = self._invest_editor.values()
+        if ROLE_CURRENCY in template.columns:
+            template.currencies = self._currency_editor.values()
+            template.base_currency = self._base_currency_combo.currentText() or None
+        else:
+            template.currencies = None
+            template.base_currency = None
 
         try:
             template.validate()

@@ -60,6 +60,14 @@ def get_schema_for_date(d: Date) -> YearSchema:
     return _instances[year]
 
 
+def invalidate(year: int) -> None:
+    """Drop the cached schema instance for `year` — call after switching
+    which candidate file is active for it, so the next get_schema_for_date()
+    rebuilds against the new path/template instead of relying on the lazy
+    path-mismatch check (which would still work, but this is more direct)."""
+    _instances.pop(year, None)
+
+
 def supported_years() -> list[int]:
     return sorted(_resolvable_years())
 

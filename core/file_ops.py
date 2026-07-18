@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 
 from . import config, settings
-from .excel import workbook_io
+from .excel import registry, workbook_io
 
 
 def move_year_file(year: int, new_path: Path) -> None:
@@ -37,3 +37,33 @@ def move_year_file(year: int, new_path: Path) -> None:
     workbook_io.invalidate(old_path)
     settings.update_path(year, new_path)
     config.FILE_PATHS[year] = new_path
+
+
+def set_active_file(year: int, path: Path) -> None:
+    """Switch which already-registered candidate file is active for
+    `year` — the one choke point everything (settings.json, the in-memory
+    config.FILE_PATHS the rest of the app reads, and the cached schema
+    instance) goes through, so a caller never has to update more than
+    one of those and risk them drifting apart."""
+    settings.set_active(year, path)
+    config.FILE_PATHS[year] = Path(path)
+    registry.invalidate(year)
+
+
+def discover_candidate_files(folder: Path) -> list[Path]:
+    """Every *.xlsx in `folder`, tracked or not — e.g. an unrelated file
+    dropped in the same OneDrive folder as the real finance files.
+    FileSelectionDialog cross-references each against the currently
+    registered candidates (across all years) to decide checked/unchecked."""
+    return sorted(Path(folder).glob("*.xlsx"))
+
+
+def known_candidate_years() -> dict[Path, int]:
+    """path -> year, for every currently registered candidate across all
+    years (regardless of active/inactive) — used by FileSelectionDialog to
+    look up which year (if any) a discovered file already belongs to."""
+    result: dict[Path, int] = {}
+    for year_str, entry in settings.load().get("files", {}).items():
+        for c in entry["candidates"]:
+            result[Path(c["path"])] = int(year_str)
+    return result

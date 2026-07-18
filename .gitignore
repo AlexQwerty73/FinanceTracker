@@ -48,3 +48,7 @@ htmlcov/
 
 # Local-only Claude working notes — not project docs, not for other contributors
 CLAUDE.md
+
+# Claude Code's own local working directory (settings, worktree copies) —
+# machine-local tooling state, not project source
+.claude/

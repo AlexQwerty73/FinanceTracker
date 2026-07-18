@@ -10,27 +10,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor, QFont
-from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from core import config, file_ops, settings
 from core.excel import registry
-from core.themes import c
+from core.themes import FIELD_HEIGHT, c, font_size
 
+from .file_selection_dialog import FileSelectionDialog
 from .transaction_fields import field_label, input_style
-
-
-def _ghost_btn(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-    btn.setStyleSheet(f"""
-        QPushButton {{ background:transparent; color:{c('t2')};
-            border:1px solid {c('in_bd')}; border-radius:8px; padding:0 12px; }}
-        QPushButton:hover {{ color:{c('t1')}; border-color:{c('t2')}; }}
-        QPushButton:disabled {{ color:{c('t3')}; border-color:{c('in_bd')}; }}
-    """)
-    return btn
+from .widgets import primary_button, secondary_button
 
 
 class ManageFilesDialog(QDialog):
@@ -47,7 +37,7 @@ class ManageFilesDialog(QDialog):
         lay.setSpacing(10)
 
         hdr = QLabel("Manage Files")
-        hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        hdr.setFont(QFont("Segoe UI", font_size("dialog"), QFont.Weight.Bold))
         hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         lay.addWidget(hdr)
 
@@ -60,16 +50,21 @@ class ManageFilesDialog(QDialog):
         folder_row = QHBoxLayout()
         self._default_folder_field = QLineEdit(str(config.FINANCES_DIR))
         self._default_folder_field.setReadOnly(True)
-        self._default_folder_field.setFixedHeight(34)
+        self._default_folder_field.setFixedHeight(FIELD_HEIGHT)
         self._default_folder_field.setStyleSheet(input_style())
-        change_folder_btn = _ghost_btn("Change…")
-        change_folder_btn.setFixedHeight(34)
+        change_folder_btn = secondary_button("Change…")
         change_folder_btn.clicked.connect(self._on_change_default_folder)
         folder_row.addWidget(self._default_folder_field, 1)
         folder_row.addWidget(change_folder_btn)
         lay.addLayout(folder_row)
 
-        lay.addWidget(field_label("Files"))
+        files_row = QHBoxLayout()
+        files_row.addWidget(field_label("Files (active file per year)"))
+        files_row.addStretch()
+        select_files_btn = secondary_button("Select files…")
+        select_files_btn.clicked.connect(self._on_select_files)
+        files_row.addWidget(select_files_btn)
+        lay.addLayout(files_row)
         self._rows_lay = QVBoxLayout()
         self._rows_lay.setSpacing(8)
         lay.addLayout(self._rows_lay)
@@ -77,17 +72,10 @@ class ManageFilesDialog(QDialog):
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
-        self._status.setFont(QFont("Segoe UI", 9))
+        self._status.setFont(QFont("Segoe UI", font_size("label")))
         lay.addWidget(self._status)
 
-        close_btn = QPushButton("Close")
-        close_btn.setFixedHeight(32)
-        close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        close_btn.setStyleSheet(f"""
-            QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-                border:1px solid {c('btn_bd')}; border-radius:8px; font-weight:bold; }}
-            QPushButton:hover {{ background:{c('btn_hbg')}; }}
-        """)
+        close_btn = primary_button("Close")
         close_btn.clicked.connect(self.accept)
         lay.addWidget(close_btn)
 
@@ -119,14 +107,22 @@ class ManageFilesDialog(QDialog):
             path_lbl.setStyleSheet(f"color:{c('t2') if path else c('t3')}; background:transparent;")
             row_lay.addWidget(path_lbl, 1)
 
-            move_btn = _ghost_btn("Move…")
-            move_btn.setFixedHeight(28)
+            move_btn = secondary_button("Move…")
             move_btn.setEnabled(path is not None and path.exists())
             move_btn.clicked.connect(lambda _checked, y=year: self._on_move(y))
             row_lay.addWidget(move_btn)
 
             self._rows_lay.addWidget(row)
             self._row_widgets.append(row)
+
+    def _on_select_files(self) -> None:
+        dlg = FileSelectionDialog(parent=self)
+        dlg.files_changed.connect(self._on_files_changed_internal)
+        dlg.exec()
+
+    def _on_files_changed_internal(self) -> None:
+        self._refresh_rows()
+        self.files_changed.emit()
 
     def _on_change_default_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Default folder for new files", str(config.FINANCES_DIR))

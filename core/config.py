@@ -32,11 +32,13 @@ _DEFAULT_FILES = {
 _settings_data = settings.load()
 if not _settings_data.get("files"):
     for _year, (_path, _template) in _DEFAULT_FILES.items():
-        settings.register_file(_year, _path, _template)
+        settings.register_candidate(_year, _path, _template)
     _settings_data = settings.load()
 
 FINANCES_DIR = Path(_settings_data.get("default_folder") or _DEFAULT_FINANCES_DIR)
 
 FILE_PATHS: dict[int, Path] = {
-    int(year): Path(entry["path"]) for year, entry in _settings_data["files"].items()
+    int(year): Path(entry["active_path"])
+    for year, entry in _settings_data["files"].items()
+    if entry.get("active_path")
 }

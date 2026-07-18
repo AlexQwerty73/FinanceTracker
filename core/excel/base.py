@@ -85,6 +85,33 @@ class YearSchema(ABC):
         """Payment types for the dropdown, or None if this year has no such field."""
         return None
 
+    def get_currencies(self) -> list[str] | None:
+        """Currencies for the dropdown, or None if this year has no such field."""
+        return None
+
+    def get_base_currency(self) -> str | None:
+        """The currency month/dashboard totals are computed and displayed in,
+        or None if this year has no currency tracking (amounts are already
+        in a single implicit currency, e.g. Schema2025/Schema2026's Kč)."""
+        return None
+
+    def to_base_amount(self, amount: float, currency: str | None) -> float:
+        """Convert one transaction's native amount(+currency) to this year's
+        base currency, using the file's *current* rate table — not a
+        historical snapshot (old months' converted totals shift if rates
+        are later edited; this matches the same simplification the Excel
+        side's own rate-lookup formula already has). Default: no currency
+        tracking, amount is already the only currency in use, unchanged."""
+        return amount
+
+    def get_rates(self) -> dict[str, float] | None:
+        """The raw currency -> rate-to-base table, or None if this year has
+        no currency tracking. Exposed (on top of to_base_amount()) for
+        converting between two arbitrary currencies, not just currency ->
+        base — e.g. the Currencies page's "total right now, in currency X"
+        figure, where X isn't necessarily this year's own base currency."""
+        return None
+
     @abstractmethod
     def add_transaction(
         self,
@@ -94,6 +121,7 @@ class YearSchema(ABC):
         amount: float,
         payment_type: str | None,
         note: str,
+        currency: str | None = None,
     ) -> None:
         """Write a new transaction row. Raises SheetFullError if the month is full."""
 
@@ -107,6 +135,7 @@ class YearSchema(ABC):
         amount: float,
         payment_type: str | None,
         note: str,
+        currency: str | None = None,
     ) -> None:
         """Replace an existing transaction (as returned by transactions_for_month)
         with new values. Raises TransactionNotFoundError if `tx` no longer
@@ -131,7 +160,10 @@ class YearSchema(ABC):
         predating the Payment column), so a tagged-only figure would stay
         at 0 nearly everywhere and tell you nothing; the derived figure at
         least moves with the month's real activity. Both are None if this
-        year has no cash tracking at all (has_cash_tracking() is False)."""
+        year has no cash tracking at all (has_cash_tracking() is False).
+
+        For a year with currency tracking, every figure here is already
+        converted to the year's base currency (see to_base_amount())."""
 
     @abstractmethod
     def transactions_for_month(self, month: int) -> list[dict]:

@@ -185,4 +185,18 @@ def create_custom_workbook(path, year: int, template: Template) -> None:
     if template.payment_types:
         _write_column(ws_lists, template.payment_types, start_row=2, col=schema_dynamic.LISTS_PAYMENT_COL)
 
+    if template.currencies:
+        ws_lists.cell(row=1, column=schema_dynamic.LISTS_CURRENCY_COL).value = "Currency"
+        _write_column(ws_lists, template.currencies, start_row=2, col=schema_dynamic.LISTS_CURRENCY_COL)
+
+        ws_lists.cell(row=1, column=schema_dynamic.LISTS_RATE_CURRENCY_COL).value = "Currency"
+        ws_lists.cell(row=1, column=schema_dynamic.LISTS_RATE_VALUE_COL).value = "Rate → base"
+        _write_column(ws_lists, template.currencies, start_row=2, col=schema_dynamic.LISTS_RATE_CURRENCY_COL)
+        if template.base_currency in template.currencies:
+            base_row = 2 + template.currencies.index(template.base_currency)
+            ws_lists.cell(row=base_row, column=schema_dynamic.LISTS_RATE_VALUE_COL).value = 1.00
+        # other currencies' rate cells are left blank on purpose — the user
+        # fills in real rates directly in Excel; DynamicSchema.to_base_amount()
+        # treats a missing rate as "don't convert" rather than crashing.
+
     workbook_io.save(wb, path)

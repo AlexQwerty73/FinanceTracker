@@ -47,10 +47,10 @@ REM -- 3. Build --
 echo [3/3] Building...
 echo.
 
-if exist icon.ico (
-    python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --icon "icon.ico" --add-data "icon.ico;." --hidden-import "PyQt6.sip" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
+if exist assets\icon.ico (
+    python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --icon "assets\icon.ico" --add-data "assets;assets" --hidden-import "PyQt6.sip" --hidden-import "PyQt6.QtSvg" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
 ) else (
-    python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --hidden-import "PyQt6.sip" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
+    python -m PyInstaller --noconfirm --onedir --windowed --name "FinanceTracker" --add-data "assets;assets" --hidden-import "PyQt6.sip" --hidden-import "PyQt6.QtSvg" --hidden-import "matplotlib.backends.backend_qtagg" --collect-data "PyQt6" --collect-submodules "openpyxl" --collect-submodules "watchdog" main.py
 )
 
 REM -- Result --

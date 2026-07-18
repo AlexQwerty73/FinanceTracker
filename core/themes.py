@@ -50,3 +50,31 @@ HEATMAP_BUCKETS: list[str] = ["#22223a", "#7a5f10", "#c98500", "#f0a500", "#ff6a
 
 def c(key: str) -> str:
     return _PALETTE[key]
+
+
+# Design tokens — the small set of radius/font/height values every
+# component should draw from, instead of a fresh magic number per call
+# site. Collapses what used to be an ad hoc spread (radii 4/5/6/8/10/12/13/14,
+# font sizes 8-16 with no scale, input heights split 30px/34px) into one
+# source of truth. Palette/semantic colors above are unaffected.
+RADIUS: dict[str, int] = {"sm": 6, "md": 8, "lg": 10, "xl": 14}
+
+FONT: dict[str, int] = {
+    "micro": 8,     # chart tick labels, tiny tags
+    "label": 9,     # field labels, helper/status text
+    "body": 10,     # default list/table cell text
+    "section": 11,  # card/section headers, stat-chip values
+    "dialog": 13,   # modal dialog headers
+    "title": 14,    # page-level titles (TopBar month title, page headers)
+    "stat": 16,     # big numeric readouts (Dashboard tiles, stat chips)
+}
+
+FIELD_HEIGHT = 32  # QLineEdit/QComboBox/QDateEdit — was split 30px/34px by file
+
+
+def radius(key: str) -> int:
+    return RADIUS[key]
+
+
+def font_size(key: str) -> int:
+    return FONT[key]

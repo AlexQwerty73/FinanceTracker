@@ -15,42 +15,26 @@ import calendar
 from datetime import date as Date
 
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core.excel import registry
 from core.excel.base import MONTH_NAMES
 from core.excel.workbook_io import WorkbookLockedError
-from core.themes import c
+from core.themes import FIELD_HEIGHT, c, font_size
 
 from ..components.charts import BalanceLineChart, CalendarHeatmap, CategoryPieChart
 from ..components.transaction_fields import input_style
-from ..components.widgets import NoWheelComboBox, bordered_box
+from ..components.widgets import NoWheelComboBox, card, scrollable_area
 
 _PERIODS = ["Last 6 months", "Last 12 months", "This year", "All time"]
 _GRANULARITIES = ["Monthly", "Daily"]
 
 
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-    lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-    return lbl
-
-
 def _control_label(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 9))
+    lbl.setFont(QFont("Segoe UI", font_size("label")))
     lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
     return lbl
-
-
-def _card(title: str) -> tuple[QWidget, QVBoxLayout]:
-    box = bordered_box(c("panel_bg"), c("panel_bd"), radius=14)
-    lay = QVBoxLayout(box)
-    lay.setContentsMargins(20, 16, 20, 16)
-    lay.setSpacing(8)
-    lay.addWidget(_section_label(title))
-    return box, lay
 
 
 def _periods_for_selection(selection: str, end_year: int, end_month: int) -> list[tuple[int, int]]:
@@ -95,20 +79,9 @@ class AnalyticsPage(QWidget):
         outer_lay = QVBoxLayout(self)
         outer_lay.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(f"""
-            QScrollArea {{ background:transparent; border:none; }}
-            QScrollBar:vertical {{ background:transparent; width:8px; }}
-            QScrollBar::handle:vertical {{ background:{c('in_bd')}; border-radius:4px; min-height:24px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
-        """)
-        outer_lay.addWidget(scroll)
-
         content = QWidget()
         content.setStyleSheet("background:transparent;")
-        scroll.setWidget(content)
+        outer_lay.addWidget(scrollable_area(content))
 
         lay = QVBoxLayout(content)
         lay.setContentsMargins(4, 4, 4, 20)
@@ -119,7 +92,7 @@ class AnalyticsPage(QWidget):
         self._period_combo = NoWheelComboBox()
         self._period_combo.addItems(_PERIODS)
         self._period_combo.setCurrentText("Last 12 months")
-        self._period_combo.setFixedHeight(30)
+        self._period_combo.setFixedHeight(FIELD_HEIGHT)
         self._period_combo.setStyleSheet(input_style())
         self._period_combo.currentTextChanged.connect(self._on_controls_changed)
         controls.addWidget(self._period_combo)
@@ -128,7 +101,7 @@ class AnalyticsPage(QWidget):
         controls.addWidget(_control_label("Granularity"))
         self._granularity_combo = NoWheelComboBox()
         self._granularity_combo.addItems(_GRANULARITIES)
-        self._granularity_combo.setFixedHeight(30)
+        self._granularity_combo.setFixedHeight(FIELD_HEIGHT)
         self._granularity_combo.setStyleSheet(input_style())
         self._granularity_combo.currentTextChanged.connect(self._on_controls_changed)
         controls.addWidget(self._granularity_combo)
@@ -140,7 +113,7 @@ class AnalyticsPage(QWidget):
         default_year = str(Date.today().year)
         if self._year_combo.findText(default_year) >= 0:
             self._year_combo.setCurrentText(default_year)
-        self._year_combo.setFixedHeight(30)
+        self._year_combo.setFixedHeight(FIELD_HEIGHT)
         self._year_combo.setStyleSheet(input_style())
         self._year_combo.currentTextChanged.connect(self._on_controls_changed)
         controls.addWidget(self._year_combo)
@@ -152,34 +125,34 @@ class AnalyticsPage(QWidget):
         self._status.setStyleSheet(f"color:{c('err_c')}; background:transparent;")
         lay.addWidget(self._status)
 
-        trend_box, trend_lay = _card("Balance over time")
+        trend_box, trend_lay = card("Balance over time")
         self._balance_line = BalanceLineChart()
         trend_lay.addWidget(self._balance_line)
         lay.addWidget(trend_box)
 
-        cash_box, cash_lay = _card("Cash flow")
+        cash_box, cash_lay = card("Cash flow")
         self._cash_flow = BalanceLineChart()
         cash_lay.addWidget(self._cash_flow)
         lay.addWidget(cash_box)
 
-        card_box, card_lay = _card("Card flow")
+        card_box, card_lay = card("Card flow")
         self._card_flow = BalanceLineChart()
         card_lay.addWidget(self._card_flow)
         lay.addWidget(card_box)
 
-        heat_box, heat_lay = _card("Daily expenses")
+        heat_box, heat_lay = card("Daily expenses")
         self._heatmap = CalendarHeatmap()
         heat_lay.addWidget(self._heatmap)
         lay.addWidget(heat_box)
 
         pies_row = QHBoxLayout()
         pies_row.setSpacing(16)
-        expense_pie_box, expense_pie_lay = _card("Expenses by category (selected period)")
+        expense_pie_box, expense_pie_lay = card("Expenses by category (selected period)")
         self._pie = CategoryPieChart()
         expense_pie_lay.addWidget(self._pie)
         pies_row.addWidget(expense_pie_box, 1)
 
-        income_pie_box, income_pie_lay = _card("Income by category (selected period)")
+        income_pie_box, income_pie_lay = card("Income by category (selected period)")
         self._income_pie = CategoryPieChart()
         income_pie_lay.addWidget(self._income_pie)
         pies_row.addWidget(income_pie_box, 1)
@@ -225,7 +198,7 @@ class AnalyticsPage(QWidget):
 
                 for tx in txs:
                     cat = tx.get("category") or "Other"
-                    amt = tx.get("amount") or 0
+                    amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
                     if schema.is_expense_type(tx.get("type")):
                         expense_breakdown[cat] = expense_breakdown.get(cat, 0.0) + amt
                     elif schema.is_income_type(tx.get("type")):
@@ -272,7 +245,7 @@ class AnalyticsPage(QWidget):
         tagged-only figure would sit at 0 nearly everywhere."""
         t = tx.get("type")
         payment = tx.get("payment_type")
-        amt = tx.get("amount") or 0
+        amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
         cash_delta = 0.0
         if schema.is_cash_in_type(t):
             cash_delta += amt
@@ -330,7 +303,7 @@ class AnalyticsPage(QWidget):
             day = raw_date.date() if hasattr(raw_date, "date") else raw_date
             if is_current_month and day > today:
                 continue
-            amt = tx.get("amount") or 0
+            amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
             if schema.is_income_type(tx.get("type")):
                 net_by_day[day] = net_by_day.get(day, 0.0) + amt
             elif schema.is_expense_type(tx.get("type")):
@@ -378,7 +351,8 @@ class AnalyticsPage(QWidget):
                     date_val = tx.get("date")
                     if date_val is not None and heat_schema.is_expense_type(tx.get("type")):
                         key = (m, date_val.day)
-                        daily[key] = daily.get(key, 0.0) + (tx.get("amount") or 0)
+                        amt = heat_schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
+                        daily[key] = daily.get(key, 0.0) + amt
         except WorkbookLockedError as exc:
             self._status.setText(str(exc))
             daily = {}

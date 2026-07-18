@@ -9,16 +9,16 @@ from __future__ import annotations
 from datetime import date as Date
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor, QFont
-from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout
 
 from core import config, settings
 from core.excel import template_model, templates
-from core.themes import c
+from core.themes import FIELD_HEIGHT, c, font_size
 
 from .transaction_fields import field_label, input_style
-from .widgets import NoWheelComboBox
+from .widgets import NoWheelComboBox, primary_button, secondary_button
 
 _NEW_TEMPLATE_SENTINEL = "__new_template__"
 
@@ -38,18 +38,22 @@ class CreateFileDialog(QDialog):
         lay.setSpacing(10)
 
         hdr = QLabel("Create New Finances File")
-        hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        hdr.setFont(QFont("Segoe UI", font_size("dialog"), QFont.Weight.Bold))
         hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         lay.addWidget(hdr)
 
-        desc = QLabel("Generates a blank Excel workbook this app can read and write, for a year that doesn't have one yet.")
+        desc = QLabel(
+            "Generates a blank Excel workbook this app can read and write. Picking a year that "
+            "already has a file adds this as an extra candidate for that year (and switches to "
+            "it) — manage which file is active from ⚙ Manage files."
+        )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color:{c('t2')}; background:transparent;")
         lay.addWidget(desc)
 
         lay.addWidget(field_label("Layout"))
         self._template_combo = NoWheelComboBox()
-        self._template_combo.setFixedHeight(34)
+        self._template_combo.setFixedHeight(FIELD_HEIGHT)
         self._template_combo.setStyleSheet(input_style())
         self._template_combo.currentIndexChanged.connect(self._on_template_selection_changed)
         lay.addWidget(self._template_combo)
@@ -57,7 +61,7 @@ class CreateFileDialog(QDialog):
 
         lay.addWidget(field_label("Year"))
         self._year_field = QLineEdit(str(self._suggest_year()))
-        self._year_field.setFixedHeight(34)
+        self._year_field.setFixedHeight(FIELD_HEIGHT)
         self._year_field.setStyleSheet(input_style())
         self._year_field.textChanged.connect(self._on_year_changed)
         lay.addWidget(self._year_field)
@@ -66,16 +70,10 @@ class CreateFileDialog(QDialog):
         path_row = QHBoxLayout()
         self._path_field = QLineEdit()
         self._path_field.setReadOnly(True)
-        self._path_field.setFixedHeight(34)
+        self._path_field.setFixedHeight(FIELD_HEIGHT)
         self._path_field.setStyleSheet(input_style())
-        browse_btn = QPushButton("Browse…")
-        browse_btn.setFixedHeight(34)
-        browse_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        browse_btn.setStyleSheet(f"""
-            QPushButton {{ background:transparent; color:{c('t2')};
-                border:1px solid {c('in_bd')}; border-radius:8px; padding:0 12px; }}
-            QPushButton:hover {{ color:{c('t1')}; border-color:{c('t2')}; }}
-        """)
+        browse_btn = secondary_button("Browse…")
+        browse_btn.setFixedHeight(FIELD_HEIGHT)
         browse_btn.clicked.connect(self._on_browse)
         path_row.addWidget(self._path_field, 1)
         path_row.addWidget(browse_btn)
@@ -84,27 +82,13 @@ class CreateFileDialog(QDialog):
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
-        self._status.setFont(QFont("Segoe UI", 9))
+        self._status.setFont(QFont("Segoe UI", font_size("label")))
         lay.addWidget(self._status)
 
         btn_row = QHBoxLayout()
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setFixedHeight(32)
-        cancel_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        cancel_btn.setStyleSheet(f"""
-            QPushButton {{ background:transparent; color:{c('t2')};
-                border:1px solid {c('in_bd')}; border-radius:8px; }}
-            QPushButton:hover {{ color:{c('t1')}; border-color:{c('t2')}; }}
-        """)
+        cancel_btn = secondary_button("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        create_btn = QPushButton("Create")
-        create_btn.setFixedHeight(32)
-        create_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        create_btn.setStyleSheet(f"""
-            QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-                border:1px solid {c('btn_bd')}; border-radius:8px; font-weight:bold; }}
-            QPushButton:hover {{ background:{c('btn_hbg')}; }}
-        """)
+        create_btn = primary_button("Create")
         create_btn.clicked.connect(self._on_create)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(create_btn)
@@ -168,10 +152,6 @@ class CreateFileDialog(QDialog):
             self._set_status("Enter a valid year (e.g. 2027).")
             return
 
-        if year in settings.get_year_templates():
-            self._set_status(f"Year {year} is already set up — pick a different year.")
-            return
-
         path_text = self._path_field.text().strip()
         if not path_text:
             self._set_status("Choose where to save the file.")
@@ -198,7 +178,7 @@ class CreateFileDialog(QDialog):
             self._set_status(f"Could not create the file: {exc}")
             return
 
-        settings.register_file(year, path, template_id)
+        settings.register_candidate(year, path, template_id, activate=True)
         config.FILE_PATHS[year] = path
         self.file_created.emit(year)
         self.accept()

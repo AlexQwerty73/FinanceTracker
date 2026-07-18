@@ -8,39 +8,17 @@ from __future__ import annotations
 
 from datetime import date as Date
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QVBoxLayout, QWidget,
 )
 
 from core.excel import registry
 from core.excel.base import CategoryExistsError
 from core.excel.workbook_io import WorkbookLockedError
-from core.themes import c
+from core.themes import FIELD_HEIGHT, c, radius
 
 from ..components.transaction_fields import input_style
-from ..components.widgets import NoWheelComboBox, bordered_box
-
-
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-    lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-    return lbl
-
-
-def _primary_btn(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setFixedHeight(34)
-    btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-    btn.setStyleSheet(f"""
-        QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-            border:1px solid {c('btn_bd')}; border-radius:8px; font-weight:bold; padding:0 16px; }}
-        QPushButton:hover {{ background:{c('btn_hbg')}; }}
-    """)
-    return btn
+from ..components.widgets import NoWheelComboBox, bordered_box, primary_button, scrollable_area, section_label
 
 
 class CategoriesPage(QWidget):
@@ -51,30 +29,19 @@ class CategoriesPage(QWidget):
         outer_lay = QVBoxLayout(self)
         outer_lay.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(f"""
-            QScrollArea {{ background:transparent; border:none; }}
-            QScrollBar:vertical {{ background:transparent; width:8px; }}
-            QScrollBar::handle:vertical {{ background:{c('in_bd')}; border-radius:4px; min-height:24px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
-        """)
-        outer_lay.addWidget(scroll)
-
         content = QWidget()
         content.setStyleSheet("background:transparent;")
-        scroll.setWidget(content)
+        outer_lay.addWidget(scrollable_area(content))
 
         lay = QVBoxLayout(content)
         lay.setContentsMargins(4, 4, 4, 20)
         lay.setSpacing(14)
 
         year_row = QHBoxLayout()
-        year_row.addWidget(_section_label("Year"))
+        year_row.addWidget(section_label("Year"))
         self._year_combo = NoWheelComboBox()
         self._year_combo.addItems([str(y) for y in registry.supported_years()])
-        self._year_combo.setFixedHeight(30)
+        self._year_combo.setFixedHeight(FIELD_HEIGHT)
         self._year_combo.setStyleSheet(input_style())
         self._year_combo.currentTextChanged.connect(self._on_year_changed)
         year_row.addWidget(self._year_combo)
@@ -88,11 +55,11 @@ class CategoriesPage(QWidget):
         body = QHBoxLayout()
         body.setSpacing(16)
 
-        list_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=14)
+        list_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=radius("xl"))
         list_lay = QVBoxLayout(list_box)
         list_lay.setContentsMargins(16, 14, 16, 14)
         list_lay.setSpacing(8)
-        list_lay.addWidget(_section_label("Categories"))
+        list_lay.addWidget(section_label("Categories"))
         self._list = QListWidget()
         self._list.setMinimumHeight(320)
         self._list.setStyleSheet(f"""
@@ -103,33 +70,33 @@ class CategoriesPage(QWidget):
         list_lay.addWidget(self._list, 1)
         body.addWidget(list_box, 1)
 
-        actions_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=14)
+        actions_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=radius("xl"))
         actions_lay = QVBoxLayout(actions_box)
         actions_lay.setContentsMargins(20, 16, 20, 16)
         actions_lay.setSpacing(10)
 
-        actions_lay.addWidget(_section_label("Add a category"))
+        actions_lay.addWidget(section_label("Add a category"))
         self._add_field = QLineEdit()
         self._add_field.setPlaceholderText("New category name...")
-        self._add_field.setFixedHeight(34)
+        self._add_field.setFixedHeight(FIELD_HEIGHT)
         self._add_field.setStyleSheet(input_style())
         actions_lay.addWidget(self._add_field)
-        add_btn = _primary_btn("Add")
+        add_btn = primary_button("Add")
         add_btn.clicked.connect(self._on_add)
         actions_lay.addWidget(add_btn)
 
         actions_lay.addSpacing(12)
-        actions_lay.addWidget(_section_label("Rename selected category"))
+        actions_lay.addWidget(section_label("Rename selected category"))
         self._rename_hint = QLabel("Select a category on the left first.")
         self._rename_hint.setWordWrap(True)
         self._rename_hint.setStyleSheet(f"color:{c('t3')}; background:transparent;")
         actions_lay.addWidget(self._rename_hint)
         self._rename_field = QLineEdit()
         self._rename_field.setPlaceholderText("New name...")
-        self._rename_field.setFixedHeight(34)
+        self._rename_field.setFixedHeight(FIELD_HEIGHT)
         self._rename_field.setStyleSheet(input_style())
         actions_lay.addWidget(self._rename_field)
-        rename_btn = _primary_btn("Rename everywhere")
+        rename_btn = primary_button("Rename everywhere")
         rename_btn.clicked.connect(self._on_rename)
         actions_lay.addWidget(rename_btn)
         actions_lay.addStretch()

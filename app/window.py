@@ -1,32 +1,39 @@
 """
 app/window.py — App: sidebar + top bar + page stack (Dashboard,
-Transactions, Analytics, Categories). Watches the Finances directory and
-refreshes the current page ~2s after any external change settles
-(debounced), plus immediately after a local add/edit/delete.
+Transactions, Analytics, Categories, Templates, Currencies). Watches the
+Finances directory and refreshes the current page ~2s after any external
+change settles (debounced), plus immediately after a local add/edit/delete.
 
 Dashboard and Transactions are cheap (one month) and always refresh
 together on any period change. Analytics reads every month in its
 selected range and Categories doesn't depend on the viewed month at all,
 so both refresh lazily — only when they become the active page, or when
-the period changes while already active.
+the period changes while already active. Currencies is all-time/all-years
+by design (independent of the viewed month entirely), same lazy pattern
+as Categories.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QCursor, QFont
+from PyQt6.QtCore import QSize, QTimer, Qt
+from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
+from core.icons import icon
 from core.themes import c
 from core.watcher import FileWatcher
 
 from .components.create_file_dialog import CreateFileDialog
 from .components.manage_files_dialog import ManageFilesDialog
 from .components.topbar import TopBar
+from .components.widgets import nav_chip_style
 from .pages.analytics_page import AnalyticsPage
 from .pages.categories_page import CategoriesPage
+from .pages.currencies_page import CurrenciesPage
 from .pages.dashboard_page import DashboardPage
 from .pages.templates_page import TemplatesPage
 from .pages.transactions_page import TransactionsPage
+
+_ICON_SIZE = QSize(22, 22)
 
 _DEBOUNCE_MS = 2000
 
@@ -35,6 +42,7 @@ PG_TRANSACTIONS = 1
 PG_ANALYTICS = 2
 PG_CATEGORIES = 3
 PG_TEMPLATES = 4
+PG_CURRENCIES = 5
 
 
 class App(QWidget):
@@ -50,6 +58,7 @@ class App(QWidget):
         self._analytics_page = AnalyticsPage()
         self._categories_page = CategoriesPage()
         self._templates_page = TemplatesPage()
+        self._currencies_page = CurrenciesPage()
         self._dashboard_page.view_all_clicked.connect(lambda: self._show_page(PG_TRANSACTIONS))
         self._transactions_page.analytics_clicked.connect(lambda: self._show_page(PG_ANALYTICS))
 
@@ -59,6 +68,7 @@ class App(QWidget):
         self._stack.addWidget(self._analytics_page)     # PG_ANALYTICS
         self._stack.addWidget(self._categories_page)    # PG_CATEGORIES
         self._stack.addWidget(self._templates_page)     # PG_TEMPLATES
+        self._stack.addWidget(self._currencies_page)    # PG_CURRENCIES
 
         self._topbar = TopBar()
         self._topbar.period_changed.connect(self._on_period_changed)
@@ -98,48 +108,43 @@ class App(QWidget):
         lay.setContentsMargins(8, 16, 8, 16)
         lay.setSpacing(6)
 
-        self._nav_btns: list[tuple[QPushButton, int]] = []
-        for emoji, tooltip, page_idx in [
-            ("\U0001F4CA", "Dashboard", PG_DASHBOARD),
-            ("\U0001F4CB", "Transactions", PG_TRANSACTIONS),
-            ("\U0001F4C8", "Analytics", PG_ANALYTICS),
-            ("\U0001F3F7", "Categories", PG_CATEGORIES),
-            ("\U0001F9E9", "Templates", PG_TEMPLATES),
+        self._nav_btns: list[tuple[QPushButton, int, str]] = []
+        for icon_name, tooltip, page_idx in [
+            ("dashboard", "Dashboard", PG_DASHBOARD),
+            ("transactions", "Transactions", PG_TRANSACTIONS),
+            ("analytics", "Analytics", PG_ANALYTICS),
+            ("categories", "Categories", PG_CATEGORIES),
+            ("templates", "Templates", PG_TEMPLATES),
+            ("currencies", "Currencies", PG_CURRENCIES),
         ]:
-            btn = QPushButton(emoji)
+            btn = QPushButton()
             btn.setFixedSize(48, 44)
-            btn.setFont(QFont("Segoe UI", 16))
+            btn.setIconSize(_ICON_SIZE)
             btn.setToolTip(tooltip)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.clicked.connect(lambda _checked, idx=page_idx: self._show_page(idx))
-            self._nav_btns.append((btn, page_idx))
+            self._nav_btns.append((btn, page_idx, icon_name))
             lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         lay.addStretch()
 
-        create_file_btn = QPushButton("\U0001F4C1")  # folder emoji — not a page, opens a dialog
+        create_file_btn = QPushButton()
         create_file_btn.setFixedSize(48, 44)
-        create_file_btn.setFont(QFont("Segoe UI", 16))
+        create_file_btn.setIcon(icon("create-file", c("t2")))
+        create_file_btn.setIconSize(_ICON_SIZE)
         create_file_btn.setToolTip("Create a new finances file")
         create_file_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        create_file_btn.setStyleSheet(f"""
-            QPushButton {{ background:transparent; color:{c('t2')};
-                border:1px solid transparent; border-radius:10px; }}
-            QPushButton:hover {{ background:{c('in_bg')}; color:{c('t1')}; }}
-        """)
+        create_file_btn.setStyleSheet(nav_chip_style(False, ghost=True, radius_key="lg"))
         create_file_btn.clicked.connect(self._on_create_file)
         lay.addWidget(create_file_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        manage_files_btn = QPushButton("⚙")  # gear emoji — not a page, opens a dialog
+        manage_files_btn = QPushButton()
         manage_files_btn.setFixedSize(48, 44)
-        manage_files_btn.setFont(QFont("Segoe UI", 16))
+        manage_files_btn.setIcon(icon("settings", c("t2")))
+        manage_files_btn.setIconSize(_ICON_SIZE)
         manage_files_btn.setToolTip("Manage files — see and move where each year's file lives")
         manage_files_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        manage_files_btn.setStyleSheet(f"""
-            QPushButton {{ background:transparent; color:{c('t2')};
-                border:1px solid transparent; border-radius:10px; }}
-            QPushButton:hover {{ background:{c('in_bg')}; color:{c('t1')}; }}
-        """)
+        manage_files_btn.setStyleSheet(nav_chip_style(False, ghost=True, radius_key="lg"))
         manage_files_btn.clicked.connect(self._on_manage_files)
         lay.addWidget(manage_files_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -148,19 +153,10 @@ class App(QWidget):
 
     def _style_nav_buttons(self) -> None:
         current = self._stack.currentIndex() if hasattr(self, "_stack") else PG_DASHBOARD
-        for btn, idx in self._nav_btns:
-            if idx == current:
-                btn.setStyleSheet(f"""
-                    QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-                        border:1px solid {c('btn_bd')}; border-radius:10px; }}
-                    QPushButton:hover {{ background:{c('btn_hbg')}; }}
-                """)
-            else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{ background:transparent; color:{c('t2')};
-                        border:1px solid transparent; border-radius:10px; }}
-                    QPushButton:hover {{ background:{c('in_bg')}; color:{c('t1')}; }}
-                """)
+        for btn, idx, icon_name in self._nav_btns:
+            selected = idx == current
+            btn.setStyleSheet(nav_chip_style(selected, ghost=True, radius_key="lg"))
+            btn.setIcon(icon(icon_name, c("ac") if selected else c("t2")))
 
     def _show_page(self, index: int) -> None:
         self._stack.setCurrentIndex(index)
@@ -169,6 +165,8 @@ class App(QWidget):
             self._analytics_page.refresh(self._topbar.year, self._topbar.month)
         elif index == PG_CATEGORIES:
             self._categories_page.refresh(self._topbar.year)
+        elif index == PG_CURRENCIES:
+            self._currencies_page.refresh()
 
     def _on_period_changed(self, year: int, month: int) -> None:
         self._dashboard_page.refresh(year, month)
@@ -199,6 +197,7 @@ class App(QWidget):
 
     def _on_files_changed(self) -> None:
         self._watcher.rewatch()  # a move can put a file in a not-yet-watched folder
+        self._topbar.refresh_active_file_label()
         self._refresh_current()
 
     def closeEvent(self, e):

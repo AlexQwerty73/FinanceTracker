@@ -34,7 +34,7 @@ class TransactionsPage(QWidget):
         self._all_txs: list[dict] = []
         self._filtered_txs: list[dict] = []
         self._current_schema = None
-        self._row_widgets: list[dict] = []  # per row: {"type","category","amount","payment","note"}
+        self._row_widgets: list[dict] = []  # per row: {"type","category","amount","currency","payment","note"}
         self._dirty_rows: set[int] = set()
 
         outer_lay = QVBoxLayout(self)
@@ -83,14 +83,14 @@ class TransactionsPage(QWidget):
         self._search.textChanged.connect(self._apply_filter)
         lay.addWidget(self._search)
 
-        self._table = QTableWidget(0, 6)
-        self._table.setHorizontalHeaderLabels(["Date", "Type", "Category", "Amount", "Payment", "Note"])
+        self._table = QTableWidget(0, 7)
+        self._table.setHorizontalHeaderLabels(["Date", "Type", "Category", "Amount", "Currency", "Payment", "Note"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self._table.horizontalHeader().setStretchLastSection(True)
-        for col, width in [(0, 90), (1, 130), (2, 170), (3, 100), (4, 90)]:
+        for col, width in [(0, 90), (1, 130), (2, 170), (3, 100), (4, 70), (5, 90)]:
             self._table.setColumnWidth(col, width)
         self._table.setMinimumHeight(320)
         self._table.setStyleSheet(f"""
@@ -180,6 +180,7 @@ class TransactionsPage(QWidget):
         types = schema.get_types() if schema is not None else []
         categories = schema.get_categories() if schema is not None else []
         payment_types = schema.get_payment_types() if schema is not None else None
+        currencies = schema.get_currencies() if schema is not None else None
 
         for row, tx in enumerate(txs):
             date_val = tx.get("date")
@@ -205,6 +206,22 @@ class TransactionsPage(QWidget):
             amount_field.setStyleSheet(input_style())
             amount_field.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+            currency_combo = None
+            if currencies is not None:
+                currency_combo = NoWheelComboBox()
+                currency_combo.addItems(currencies)
+                idx = currency_combo.findText(tx.get("currency") or "")
+                if idx >= 0:
+                    currency_combo.setCurrentIndex(idx)
+                else:
+                    base = schema.get_base_currency()
+                    if base in currencies:
+                        currency_combo.setCurrentText(base)
+                currency_combo.setStyleSheet(input_style())
+                self._table.setCellWidget(row, 4, currency_combo)
+            else:
+                self._table.setItem(row, 4, QTableWidgetItem(""))
+
             payment_combo = None
             if payment_types is not None:
                 payment_combo = NoWheelComboBox()
@@ -218,9 +235,9 @@ class TransactionsPage(QWidget):
                     # display to Card, same preference as new transactions.
                     payment_combo.setCurrentText("Card")
                 payment_combo.setStyleSheet(input_style())
-                self._table.setCellWidget(row, 4, payment_combo)
+                self._table.setCellWidget(row, 5, payment_combo)
             else:
-                self._table.setItem(row, 4, QTableWidgetItem(""))
+                self._table.setItem(row, 5, QTableWidgetItem(""))
 
             note_field = QLineEdit(tx.get("note") or "")
             note_field.setStyleSheet(input_style())
@@ -228,11 +245,11 @@ class TransactionsPage(QWidget):
             self._table.setCellWidget(row, 1, type_combo)
             self._table.setCellWidget(row, 2, category_combo)
             self._table.setCellWidget(row, 3, amount_field)
-            self._table.setCellWidget(row, 5, note_field)
+            self._table.setCellWidget(row, 6, note_field)
 
             self._row_widgets.append({
                 "type": type_combo, "category": category_combo, "amount": amount_field,
-                "payment": payment_combo, "note": note_field,
+                "currency": currency_combo, "payment": payment_combo, "note": note_field,
             })
             self._update_amount_color(row)
 
@@ -243,6 +260,8 @@ class TransactionsPage(QWidget):
             category_combo.currentTextChanged.connect(lambda _t, r=row: self._on_field_changed(r))
             amount_field.textChanged.connect(lambda _t, r=row: self._on_field_changed(r))
             note_field.textChanged.connect(lambda _t, r=row: self._on_field_changed(r))
+            if currency_combo is not None:
+                currency_combo.currentTextChanged.connect(lambda _t, r=row: self._on_field_changed(r))
             if payment_combo is not None:
                 payment_combo.currentTextChanged.connect(lambda _t, r=row: self._on_field_changed(r))
 
@@ -276,7 +295,7 @@ class TransactionsPage(QWidget):
 
         # Validate every dirty row before writing anything, so a bad amount
         # in one row doesn't leave the workbook half-updated.
-        to_write: list[tuple[dict, Date, str, str, float, str | None, str]] = []
+        to_write: list[tuple[dict, Date, str, str, float, str | None, str, str | None]] = []
         for row in sorted(self._dirty_rows):
             tx = self._filtered_txs[row]
             widgets = self._row_widgets[row]
@@ -291,12 +310,14 @@ class TransactionsPage(QWidget):
                 self._set_status(f'Row "{tx.get("category")}": enter a valid positive amount.')
                 return
             new_payment = widgets["payment"].currentText() if widgets["payment"] is not None else tx.get("payment_type")
+            new_currency = widgets["currency"].currentText() if widgets["currency"] is not None else tx.get("currency")
             new_note = widgets["note"].text().strip()
 
             unchanged = (
                 new_type == tx.get("type") and new_category == tx.get("category")
                 and abs(new_amount - (tx.get("amount") or 0)) < 1e-9
-                and new_payment == tx.get("payment_type") and new_note == (tx.get("note") or "")
+                and new_payment == tx.get("payment_type") and new_currency == tx.get("currency")
+                and new_note == (tx.get("note") or "")
             )
             if unchanged:
                 continue
@@ -305,7 +326,7 @@ class TransactionsPage(QWidget):
             if date_val is None:
                 month_num = MONTH_NAMES.index(tx["month"]) + 1
                 date_val = Date(schema.year, month_num, 1)
-            to_write.append((tx, date_val, new_type, new_category, new_amount, new_payment, new_note))
+            to_write.append((tx, date_val, new_type, new_category, new_amount, new_payment, new_note, new_currency))
 
         if not to_write:
             self._set_status("No changes to save.", error=False)
@@ -313,9 +334,11 @@ class TransactionsPage(QWidget):
 
         saved = 0
         error_msg = None
-        for tx, date_val, new_type, new_category, new_amount, new_payment, new_note in to_write:
+        for tx, date_val, new_type, new_category, new_amount, new_payment, new_note, new_currency in to_write:
             try:
-                schema.update_transaction(tx, date_val, new_type, new_category, new_amount, new_payment, new_note)
+                schema.update_transaction(
+                    tx, date_val, new_type, new_category, new_amount, new_payment, new_note, new_currency
+                )
                 saved += 1
             except (TransactionNotFoundError, WorkbookLockedError) as exc:
                 error_msg = str(exc)
@@ -348,7 +371,8 @@ class TransactionsPage(QWidget):
         if tx is None or self._current_schema is None:
             return
         label = tx.get("date").strftime("%Y-%m-%d") if tx.get("date") else tx.get("month", "")
-        details = f"{label} — {tx.get('type')} / {tx.get('category')} — {fmt_amount(tx.get('amount') or 0)}"
+        tx_currency = tx.get("currency") or self._current_schema.get_base_currency()
+        details = f"{label} — {tx.get('type')} / {tx.get('category')} — {fmt_amount(tx.get('amount') or 0, tx_currency)}"
         if tx.get("payment_type"):
             details += f" — {tx['payment_type']}"
         if tx.get("note"):

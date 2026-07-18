@@ -193,8 +193,10 @@ class Schema2026(YearSchema):
 
     def add_transaction(
         self, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str,
+        payment_type: str | None, note: str, currency: str | None = None,
     ) -> None:
+        # currency is unused here — 2026 has no multi-currency concept,
+        # kept only so callers can pass it uniformly across every schema.
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)
         self._write_transaction(wb, date, type_, category, amount, payment_type, note)
@@ -202,7 +204,7 @@ class Schema2026(YearSchema):
 
     def update_transaction(
         self, tx: dict, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str,
+        payment_type: str | None, note: str, currency: str | None = None,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)

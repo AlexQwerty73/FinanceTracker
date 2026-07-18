@@ -7,15 +7,18 @@ from __future__ import annotations
 
 from datetime import date as Date, datetime
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from core import config
 from core.excel import registry
 from core.excel.base import MONTH_NAMES
-from core.themes import c
+from core.icons import icon
+from core.themes import c, font_size, radius
 
 from .transaction_dialog import TransactionDialog
+from .widgets import nav_chip_style, primary_button
 
 
 class _MonthPicker(QDialog):
@@ -38,7 +41,7 @@ class _MonthPicker(QDialog):
         # — panel_bg here would render as barely-visible white.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
-            QDialog {{ background:{c('chart_bg')}; border:1px solid {c('panel_bd')}; border-radius:10px; }}
+            QDialog {{ background:{c('chart_bg')}; border:1px solid {c('panel_bd')}; border-radius:{radius('lg')}px; }}
         """)
 
         lay = QVBoxLayout(self)
@@ -51,7 +54,7 @@ class _MonthPicker(QDialog):
         prev_y.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         prev_y.clicked.connect(lambda: self._shift_year(-1))
         self._year_lbl = QLabel(str(year))
-        self._year_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._year_lbl.setFont(QFont("Segoe UI", font_size("section"), QFont.Weight.Bold))
         self._year_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._year_lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         next_y = QPushButton(">")
@@ -59,11 +62,7 @@ class _MonthPicker(QDialog):
         next_y.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         next_y.clicked.connect(lambda: self._shift_year(1))
         for btn in (prev_y, next_y):
-            btn.setStyleSheet(f"""
-                QPushButton {{ background:{c('in_bg')}; color:{c('t1')};
-                    border:1px solid {c('in_bd')}; border-radius:6px; }}
-                QPushButton:hover {{ border-color:{c('ac')}; color:{c('ac')}; }}
-            """)
+            btn.setStyleSheet(nav_chip_style(False, radius_key="sm"))
         year_row.addWidget(prev_y)
         year_row.addWidget(self._year_lbl, 1)
         year_row.addWidget(next_y)
@@ -92,18 +91,7 @@ class _MonthPicker(QDialog):
             in_range = floor <= (self._year, m) <= ceiling
             btn.setEnabled(in_range)
             is_selected = in_range and (self._year, m) == self._active
-            if is_selected:
-                btn.setStyleSheet(f"""
-                    QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-                        border:1px solid {c('btn_bd')}; border-radius:6px; font-weight:bold; }}
-                """)
-            else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{ background:{c('in_bg')}; color:{c('t1')};
-                        border:1px solid {c('in_bd')}; border-radius:6px; }}
-                    QPushButton:hover {{ border-color:{c('ac')}; color:{c('ac')}; }}
-                    QPushButton:disabled {{ color:{c('t3')}; background:transparent; }}
-                """)
+            btn.setStyleSheet(nav_chip_style(is_selected, radius_key="sm"))
 
     def _shift_year(self, delta: int) -> None:
         self._year += delta
@@ -118,12 +106,7 @@ def _nav_btn(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setFixedSize(30, 28)
     btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-    btn.setStyleSheet(f"""
-        QPushButton {{ background:{c('in_bg')}; color:{c('t1')};
-            border:1px solid {c('in_bd')}; border-radius:6px; }}
-        QPushButton:hover {{ border-color:{c('ac')}; color:{c('ac')}; }}
-        QPushButton:disabled {{ color:{c('t3')}; }}
-    """)
+    btn.setStyleSheet(nav_chip_style(False, radius_key="sm"))
     return btn
 
 
@@ -133,7 +116,7 @@ def _ghost_btn(text: str) -> QPushButton:
     btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     btn.setStyleSheet(f"""
         QPushButton {{ background:transparent; color:{c('t2')};
-            border:1px solid {c('in_bd')}; border-radius:6px; padding:0 10px; }}
+            border:1px solid {c('in_bd')}; border-radius:{radius('sm')}px; padding:0 10px; }}
         QPushButton:hover {{ color:{c('ac')}; border-color:{c('ac')}; }}
     """)
     return btn
@@ -158,15 +141,23 @@ class TopBar(QWidget):
         lay.addWidget(self._prev_btn)
 
         self._title = QPushButton("")
-        self._title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        self._title.setFont(QFont("Segoe UI", font_size("title"), QFont.Weight.Bold))
+        self._title.setIcon(icon("chevron-down", c("t1")))
+        self._title.setIconSize(QSize(14, 14))
         self._title.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._title.setToolTip("Click to pick a month/year directly")
         self._title.setStyleSheet(f"""
-            QPushButton {{ color:{c('t1')}; background:transparent; border:none; }}
+            QPushButton {{ color:{c('t1')}; background:transparent; border:none; text-align:left; }}
             QPushButton:hover {{ color:{c('ac')}; }}
         """)
         self._title.clicked.connect(self._open_month_picker)
         lay.addWidget(self._title, 1)
+
+        self._file_lbl = QLabel("")
+        self._file_lbl.setFont(QFont("Segoe UI", font_size("micro")))
+        self._file_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        self._file_lbl.setToolTip("The file currently active for this year — change it from ⚙ Manage files")
+        lay.addWidget(self._file_lbl)
 
         self._next_btn = _nav_btn(">")
         self._next_btn.clicked.connect(self._go_next)
@@ -177,7 +168,7 @@ class TopBar(QWidget):
         lay.addWidget(today_btn)
 
         self._updated_lbl = QLabel("")
-        self._updated_lbl.setFont(QFont("Segoe UI", 8))
+        self._updated_lbl.setFont(QFont("Segoe UI", font_size("micro")))
         self._updated_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
         lay.addWidget(self._updated_lbl)
 
@@ -185,23 +176,25 @@ class TopBar(QWidget):
         refresh_btn.clicked.connect(lambda: self.period_changed.emit(self.year, self.month))
         lay.addWidget(refresh_btn)
 
-        add_btn = QPushButton("+ Add Transaction")
-        add_btn.setFixedHeight(32)
-        add_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        add_btn.setStyleSheet(f"""
-            QPushButton {{ background:{c('btn_bg')}; color:{c('ac')};
-                border:1px solid {c('btn_bd')}; border-radius:8px; font-weight:bold; padding:0 14px; }}
-            QPushButton:hover {{ background:{c('btn_hbg')}; }}
-        """)
+        add_btn = primary_button("+ Add Transaction")
         add_btn.clicked.connect(self._on_add)
         lay.addWidget(add_btn)
 
         self._update_title()
 
     def _update_title(self) -> None:
-        self._title.setText(f"{MONTH_NAMES[self.month - 1]} {self.year}  ▾")
+        self._title.setText(f"{MONTH_NAMES[self.month - 1]} {self.year}")
+        active_path = config.FILE_PATHS.get(self.year)
+        self._file_lbl.setText(active_path.name if active_path else "")
         self._prev_btn.setEnabled((self.year, self.month) > registry.min_supported_period())
         self._next_btn.setEnabled((self.year, self.month) < registry.max_supported_period())
+
+    def refresh_active_file_label(self) -> None:
+        """Re-reads config.FILE_PATHS for the viewed year — call after the
+        active file for a year may have changed (FileSelectionDialog),
+        since that doesn't otherwise trigger _update_title()."""
+        active_path = config.FILE_PATHS.get(self.year)
+        self._file_lbl.setText(active_path.name if active_path else "")
 
     def mark_updated(self) -> None:
         self._updated_lbl.setText(f"Updated {datetime.now().strftime('%H:%M:%S')}")

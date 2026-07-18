@@ -27,13 +27,17 @@ from . import workbook_io
 from ._formula import amount_value
 from ._rows import find_empty_row
 from .base import CategoryExistsError, MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema
-from .template_model import ROLE_AMOUNT, ROLE_CATEGORY, ROLE_DATE, ROLE_NOTES, ROLE_PAYMENT, ROLE_TYPE, Template
+from .template_model import (
+    ROLE_AMOUNT, ROLE_CATEGORY, ROLE_CURRENCY, ROLE_DATE, ROLE_NOTES, ROLE_PAYMENT, ROLE_TYPE, Template,
+)
 
 DATA_START_ROW = 2
 MAX_DATA_ROW = 500  # generous — no real formula ties this down for a fresh custom file
 
 LISTS_SHEET = "Lists"
 LISTS_CATEGORIES_COL, LISTS_TYPES_COL, LISTS_PAYMENT_COL = 1, 2, 3
+LISTS_CURRENCY_COL = 4  # currency codes list (dropdown source)
+LISTS_RATE_CURRENCY_COL, LISTS_RATE_VALUE_COL = 8, 9  # small Currency -> Rate table, columns H:I
 
 
 class DynamicSchema(YearSchema):
@@ -51,6 +55,50 @@ class DynamicSchema(YearSchema):
         if ROLE_PAYMENT not in self._col:
             return None
         return list(self.template.payment_types or [])
+
+    def get_currencies(self) -> list[str] | None:
+        if ROLE_CURRENCY not in self._col:
+            return None
+        return list(self.template.currencies or [])
+
+    def get_base_currency(self) -> str | None:
+        if ROLE_CURRENCY not in self._col:
+            return None
+        return self.template.base_currency
+
+    def to_base_amount(self, amount: float, currency: str | None) -> float:
+        if ROLE_CURRENCY not in self._col:
+            return amount
+        return self._convert(amount, currency, self._read_rates())
+
+    def get_rates(self) -> dict[str, float] | None:
+        if ROLE_CURRENCY not in self._col:
+            return None
+        return self._read_rates()
+
+    def _convert(self, amount: float, currency: str | None, rates: dict[str, float]) -> float:
+        if not currency or currency == self.template.base_currency:
+            return amount
+        rate = rates.get(currency)
+        # unknown/blank rate — don't crash, don't silently zero the
+        # transaction out; treat it as unconverted until the user fills
+        # in a real rate on the Lists sheet.
+        return amount * rate if rate is not None else amount
+
+    def _read_rates(self) -> dict[str, float]:
+        wb = workbook_io.load(self.file_path, data_only=False)
+        ws = wb[LISTS_SHEET]
+        rates: dict[str, float] = {}
+        row = 2
+        while True:
+            code = ws.cell(row=row, column=LISTS_RATE_CURRENCY_COL).value
+            if code is None:
+                break
+            val = ws.cell(row=row, column=LISTS_RATE_VALUE_COL).value
+            if isinstance(val, (int, float)):
+                rates[str(code).strip()] = float(val)
+            row += 1
+        return rates
 
     # ── Lists sheet (Categories/Types/Payment) ──────────────────────────
 
@@ -119,7 +167,7 @@ class DynamicSchema(YearSchema):
 
     def _write_transaction(
         self, wb, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str,
+        payment_type: str | None, note: str, currency: str | None = None,
     ) -> None:
         ws = wb[MONTH_NAMES[date.month - 1]]
         row = find_empty_row(ws, DATA_START_ROW, MAX_DATA_ROW, self._col[ROLE_CATEGORY])
@@ -136,6 +184,8 @@ class DynamicSchema(YearSchema):
         ws.cell(row=row, column=self._col[ROLE_AMOUNT]).value = amount
         if ROLE_PAYMENT in self._col:
             ws.cell(row=row, column=self._col[ROLE_PAYMENT]).value = payment_type
+        if ROLE_CURRENCY in self._col:
+            ws.cell(row=row, column=self._col[ROLE_CURRENCY]).value = currency
         if ROLE_NOTES in self._col:
             ws.cell(row=row, column=self._col[ROLE_NOTES]).value = note
 
@@ -157,21 +207,21 @@ class DynamicSchema(YearSchema):
 
     def add_transaction(
         self, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str,
+        payment_type: str | None, note: str, currency: str | None = None,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)
-        self._write_transaction(wb, date, type_, category, amount, payment_type, note)
+        self._write_transaction(wb, date, type_, category, amount, payment_type, note, currency)
         workbook_io.save(wb, self.file_path)
 
     def update_transaction(
         self, tx: dict, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str,
+        payment_type: str | None, note: str, currency: str | None = None,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)
         self._clear_transaction(wb, tx)
-        self._write_transaction(wb, date, type_, category, amount, payment_type, note)
+        self._write_transaction(wb, date, type_, category, amount, payment_type, note, currency)
         workbook_io.save(wb, self.file_path)
 
     def delete_transaction(self, tx: dict) -> None:
@@ -186,6 +236,8 @@ class DynamicSchema(YearSchema):
         type_col, amount_col = self._col[ROLE_TYPE], self._col[ROLE_AMOUNT]
         cat_col = self._col[ROLE_CATEGORY]
         payment_col = self._col.get(ROLE_PAYMENT)
+        currency_col = self._col.get(ROLE_CURRENCY)
+        rates = self._read_rates() if currency_col else None
 
         income = expense = invest = cash = 0.0
         for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
@@ -195,6 +247,9 @@ class DynamicSchema(YearSchema):
             amount = amount_value(ws.cell(row=row, column=amount_col).value) or 0
             category = ws.cell(row=row, column=cat_col).value
             payment = ws.cell(row=row, column=payment_col).value if payment_col else None
+            if currency_col:
+                currency = ws.cell(row=row, column=currency_col).value
+                amount = self._convert(amount, currency, rates)
 
             if self.is_income_type(t):
                 income += amount
@@ -226,6 +281,7 @@ class DynamicSchema(YearSchema):
         cat_col = self._col[ROLE_CATEGORY]
         date_col = self._col.get(ROLE_DATE)
         payment_col = self._col.get(ROLE_PAYMENT)
+        currency_col = self._col.get(ROLE_CURRENCY)
         notes_col = self._col.get(ROLE_NOTES)
 
         result = []
@@ -241,6 +297,7 @@ class DynamicSchema(YearSchema):
                 "category": category,
                 "amount": amount_value(ws.cell(row=row, column=self._col[ROLE_AMOUNT]).value) or 0,
                 "payment_type": (ws.cell(row=row, column=payment_col).value or None) if payment_col else None,
+                "currency": (ws.cell(row=row, column=currency_col).value or None) if currency_col else None,
                 "note": (ws.cell(row=row, column=notes_col).value or "") if notes_col else "",
             })
         if date_col:

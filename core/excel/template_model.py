@@ -9,7 +9,7 @@ core/excel/templates.py and schema_dynamic.py.
 A template can only pick from a fixed, closed set of column roles: nothing
 in the app's logic (is_income_type, category grouping in the charts, etc.)
 would know what to do with an unknown role, so "configurable" means
-"which of these six, in what order" rather than truly arbitrary fields.
+"which of these seven, in what order" rather than truly arbitrary fields.
 
 Persisted as JSON at ~/.financetracker/templates.json — a flat list of
 serialized Template objects. Dependency-free (no import of core.config),
@@ -28,9 +28,10 @@ ROLE_CATEGORY = "category"
 ROLE_TYPE = "type"
 ROLE_AMOUNT = "amount"
 ROLE_PAYMENT = "payment"
+ROLE_CURRENCY = "currency"
 ROLE_NOTES = "notes"
 
-ALL_ROLES = [ROLE_DATE, ROLE_CATEGORY, ROLE_TYPE, ROLE_AMOUNT, ROLE_PAYMENT, ROLE_NOTES]
+ALL_ROLES = [ROLE_DATE, ROLE_CATEGORY, ROLE_TYPE, ROLE_AMOUNT, ROLE_PAYMENT, ROLE_CURRENCY, ROLE_NOTES]
 REQUIRED_ROLES = {ROLE_CATEGORY, ROLE_TYPE, ROLE_AMOUNT}
 OPTIONAL_ROLES = [r for r in ALL_ROLES if r not in REQUIRED_ROLES]
 
@@ -40,6 +41,7 @@ ROLE_LABELS = {
     ROLE_TYPE: "Type",
     ROLE_AMOUNT: "Amount",
     ROLE_PAYMENT: "Payment type",
+    ROLE_CURRENCY: "Currency",
     ROLE_NOTES: "Notes",
 }
 
@@ -64,6 +66,8 @@ class Template:
     cash_in_type: str | None = None
     payment_types: list[str] | None = None
     invest_categories: list[str] = field(default_factory=list)
+    currencies: list[str] | None = None
+    base_currency: str | None = None
 
     @staticmethod
     def new_blank() -> "Template":
@@ -106,9 +110,19 @@ class Template:
             raise TemplateValidationError("Add at least one payment type (e.g. Cash, Card).")
         if any(cat not in self.categories for cat in self.invest_categories):
             raise TemplateValidationError("Investment categories must be picked from the categories list.")
+        if ROLE_CURRENCY in self.columns:
+            if not self.currencies:
+                raise TemplateValidationError("Add at least one currency (e.g. CZK, USD).")
+            if not self.base_currency:
+                raise TemplateValidationError("Pick a base currency for totals.")
+            if self.base_currency not in self.currencies:
+                raise TemplateValidationError("Base currency must be one of the currencies listed.")
 
     def has_daily_dates(self) -> bool:
         return ROLE_DATE in self.columns
+
+    def has_currency(self) -> bool:
+        return ROLE_CURRENCY in self.columns
 
 
 def _load_all() -> list[dict]:

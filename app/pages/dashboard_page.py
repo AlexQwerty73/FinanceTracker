@@ -13,17 +13,16 @@ from datetime import date as Date
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from core.excel import registry
 from core.excel.workbook_io import WorkbookLockedError
 from core.format import fmt_amount
-from core.themes import c
+from core.themes import c, font_size, radius
 
 from ..components.charts import CategoryPieChart, RunningBalanceChart
-from ..components.widgets import bordered_box
+from ..components.widgets import bordered_box, card, scrollable_area, section_label
 
 _TILES = [
     ("income", "Income", "income_c"),
@@ -39,22 +38,6 @@ _TILES_PER_ROW = len(_TILES)
 _PREVIEW_ROWS = 5
 
 
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-    lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-    return lbl
-
-
-def _card(title: str) -> tuple[QWidget, QVBoxLayout]:
-    box = bordered_box(c("panel_bg"), c("panel_bd"), radius=14)
-    lay = QVBoxLayout(box)
-    lay.setContentsMargins(20, 16, 20, 16)
-    lay.setSpacing(8)
-    lay.addWidget(_section_label(title))
-    return box, lay
-
-
 class DashboardPage(QWidget):
     view_all_clicked = pyqtSignal()
 
@@ -66,20 +49,9 @@ class DashboardPage(QWidget):
         outer_lay = QVBoxLayout(self)
         outer_lay.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(f"""
-            QScrollArea {{ background:transparent; border:none; }}
-            QScrollBar:vertical {{ background:transparent; width:8px; }}
-            QScrollBar::handle:vertical {{ background:{c('in_bd')}; border-radius:4px; min-height:24px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
-        """)
-        outer_lay.addWidget(scroll)
-
         content = QWidget()
         content.setStyleSheet("background:transparent;")
-        scroll.setWidget(content)
+        outer_lay.addWidget(scrollable_area(content))
 
         lay = QVBoxLayout(content)
         lay.setContentsMargins(4, 4, 4, 20)
@@ -94,15 +66,15 @@ class DashboardPage(QWidget):
         tiles_grid.setSpacing(10)
         self._tile_labels: dict[str, QLabel] = {}
         for i, (key, title, color_key) in enumerate(_TILES):
-            box = bordered_box(c("panel_bg"), c("panel_bd"), radius=12)
+            box = bordered_box(c("panel_bg"), c("panel_bd"), radius=radius("lg"))
             box_lay = QVBoxLayout(box)
             box_lay.setContentsMargins(16, 12, 16, 12)
             box_lay.setSpacing(2)
             title_lbl = QLabel(title)
-            title_lbl.setFont(QFont("Segoe UI", 9))
+            title_lbl.setFont(QFont("Segoe UI", font_size("label")))
             title_lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
             value_lbl = QLabel("0.00")
-            value_lbl.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+            value_lbl.setFont(QFont("Segoe UI", font_size("stat"), QFont.Weight.Bold))
             value_lbl.setStyleSheet(f"color:{c(color_key)}; background:transparent;")
             box_lay.addWidget(title_lbl)
             box_lay.addWidget(value_lbl)
@@ -110,31 +82,31 @@ class DashboardPage(QWidget):
             self._tile_labels[key] = value_lbl
         lay.addLayout(tiles_grid)
 
-        balance_box, balance_lay = _card("Balance this month")
+        balance_box, balance_lay = card("Balance this month")
         self._balance_chart = RunningBalanceChart()
         balance_lay.addWidget(self._balance_chart)
         lay.addWidget(balance_box)
 
         pies_row = QHBoxLayout()
         pies_row.setSpacing(16)
-        expense_box, expense_lay = _card("Expenses by category")
+        expense_box, expense_lay = card("Expenses by category")
         self._expense_pie = CategoryPieChart()
         expense_lay.addWidget(self._expense_pie)
         pies_row.addWidget(expense_box, 1)
 
-        income_box, income_lay = _card("Income by category")
+        income_box, income_lay = card("Income by category")
         self._income_pie = CategoryPieChart()
         income_lay.addWidget(self._income_pie)
         pies_row.addWidget(income_box, 1)
         lay.addLayout(pies_row)
 
-        preview_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=14)
+        preview_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=radius("xl"))
         preview_lay = QVBoxLayout(preview_box)
         preview_lay.setContentsMargins(20, 16, 20, 16)
         preview_lay.setSpacing(6)
 
         preview_hdr = QHBoxLayout()
-        preview_hdr.addWidget(_section_label("Recent transactions"))
+        preview_hdr.addWidget(section_label("Recent transactions"))
         preview_hdr.addStretch()
         view_all_btn = QPushButton("View all →")
         view_all_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -170,19 +142,20 @@ class DashboardPage(QWidget):
             self._status.setText(str(exc))
             return
 
+        base_currency = schema.get_base_currency()
         self._status.setText("")
         for key, _title, _color in _TILES:
             if key in _SIGNED_TILES:
                 continue
-            self._tile_labels[key].setText(fmt_amount(summary[key]))
+            self._tile_labels[key].setText(fmt_amount(summary[key], base_currency))
         for key in _SIGNED_TILES:
-            self._set_signed_tile(key, summary.get(key))
+            self._set_signed_tile(key, summary.get(key), base_currency)
 
         expense_breakdown: dict[str, float] = {}
         income_breakdown: dict[str, float] = {}
         for tx in txs:
             cat = tx.get("category") or "Other"
-            amt = tx.get("amount") or 0
+            amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
             if schema.is_expense_type(tx.get("type")):
                 expense_breakdown[cat] = expense_breakdown.get(cat, 0.0) + amt
             elif schema.is_income_type(tx.get("type")):
@@ -193,14 +166,14 @@ class DashboardPage(QWidget):
         self._balance_chart.update_data(self._build_running_balance(schema, txs))
         self._render_preview(schema, txs[:_PREVIEW_ROWS])
 
-    def _set_signed_tile(self, key: str, value: float | None) -> None:
+    def _set_signed_tile(self, key: str, value: float | None, base_currency: str | None = None) -> None:
         lbl = self._tile_labels[key]
         if value is None:
             lbl.setText("N/A")
             lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
         else:
             sign = "+" if value >= 0 else "-"
-            lbl.setText(f"{sign}{fmt_amount(abs(value))}")
+            lbl.setText(f"{sign}{fmt_amount(abs(value), base_currency)}")
             lbl.setStyleSheet(f"color:{c('income_c') if value >= 0 else c('expense_c')}; background:transparent;")
 
     def _build_running_balance(self, schema, txs: list[dict]) -> list[tuple[int, float]] | None:
@@ -211,7 +184,7 @@ class DashboardPage(QWidget):
             d = tx.get("date")
             if d is None:
                 continue
-            amt = tx.get("amount") or 0
+            amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
             if schema.is_income_type(tx.get("type")):
                 daily_delta[d.day] = daily_delta.get(d.day, 0.0) + amt
             elif schema.is_expense_type(tx.get("type")):
@@ -247,7 +220,8 @@ class DashboardPage(QWidget):
             is_expense = schema.is_expense_type(tx.get("type"))
             amount_color = c("expense_c") if is_expense else c("income_c")
             sign = "-" if is_expense else "+"
-            amount_lbl = QLabel(f"{sign}{fmt_amount(tx.get('amount') or 0)}")
+            tx_currency = tx.get("currency") or schema.get_base_currency()
+            amount_lbl = QLabel(f"{sign}{fmt_amount(tx.get('amount') or 0, tx_currency)}")
             amount_lbl.setStyleSheet(f"color:{amount_color}; background:transparent; font-weight:bold;")
             row_lay.addWidget(amount_lbl)
 
