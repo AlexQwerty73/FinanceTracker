@@ -1,8 +1,12 @@
 """
-app/components/create_file_dialog.py — CreateFileDialog: generate a
+app/components/create_file_dialog.py — CreateFileWidget: generate a
 brand-new, blank Finances_<year>.xlsx from one of the two built-in layouts
 and register it, so someone without an existing file (e.g. this app
-shared with someone else) can start using it from scratch.
+shared with someone else) can start using it from scratch. Lives as one
+tab inside SettingsDialog (app/components/settings_dialog.py) — a plain
+QWidget, not its own top-level dialog, so it has no Cancel/close of its
+own; "Create" just leaves a success message and stays open (the outer
+Settings dialog is what the user closes when done).
 """
 from __future__ import annotations
 
@@ -11,11 +15,11 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout
+from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from core import config, settings
 from core.excel import template_model, templates
-from core.themes import FIELD_HEIGHT, c, font_size
+from core.themes import c, FIELD_HEIGHT, font_size
 
 from .transaction_fields import field_label, input_style
 from .widgets import NoWheelComboBox, primary_button, secondary_button
@@ -23,29 +27,21 @@ from .widgets import NoWheelComboBox, primary_button, secondary_button
 _NEW_TEMPLATE_SENTINEL = "__new_template__"
 
 
-class CreateFileDialog(QDialog):
+class CreateFileWidget(QWidget):
     file_created = pyqtSignal(int)  # emits the new year on success
     manage_templates_requested = pyqtSignal()  # user picked "design a new template"
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Create New Finances File")
-        self.setFixedWidth(420)
-        self.setStyleSheet(f"QDialog {{ background:{c('bg')}; }}")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(10)
 
-        hdr = QLabel("Create New Finances File")
-        hdr.setFont(QFont("Segoe UI", font_size("dialog"), QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
-        lay.addWidget(hdr)
-
         desc = QLabel(
             "Generates a blank Excel workbook this app can read and write. Picking a year that "
             "already has a file adds this as an extra candidate for that year (and switches to "
-            "it) — manage which file is active from ⚙ Manage files."
+            "it) — manage which file is active from the Files tab."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color:{c('t2')}; background:transparent;")
@@ -85,14 +81,10 @@ class CreateFileDialog(QDialog):
         self._status.setFont(QFont("Segoe UI", font_size("label")))
         lay.addWidget(self._status)
 
-        btn_row = QHBoxLayout()
-        cancel_btn = secondary_button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
         create_btn = primary_button("Create")
         create_btn.clicked.connect(self._on_create)
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(create_btn)
-        lay.addLayout(btn_row)
+        lay.addWidget(create_btn)
+        lay.addStretch()
 
     def _refresh_template_combo(self, select_id: str | None = None) -> None:
         self._template_combo.blockSignals(True)
@@ -112,10 +104,10 @@ class CreateFileDialog(QDialog):
         if self._template_combo.currentData() != _NEW_TEMPLATE_SENTINEL:
             return
         # Template design now happens on its own page (live preview etc.) —
-        # close this dialog and let the app switch there; the new template
-        # will show up in this combo next time it's opened.
+        # the parent SettingsDialog listens for this and closes itself so
+        # the app can switch there; the new template will show up in this
+        # combo next time this tab is opened.
         self.manage_templates_requested.emit()
-        self.reject()
 
     def _suggest_year(self) -> int:
         used = set(settings.get_year_templates())
@@ -131,8 +123,8 @@ class CreateFileDialog(QDialog):
     def _on_year_changed(self, _text: str) -> None:
         self._set_default_path()
 
-    def _set_status(self, text: str) -> None:
-        self._status.setStyleSheet(f"color:{c('err_c')}; background:transparent;")
+    def _set_status(self, text: str, error: bool = True) -> None:
+        self._status.setStyleSheet(f"color:{c('err_c') if error else c('income_c')}; background:transparent;")
         self._status.setText(text)
 
     def _on_browse(self) -> None:
@@ -180,5 +172,5 @@ class CreateFileDialog(QDialog):
 
         settings.register_candidate(year, path, template_id, activate=True)
         config.FILE_PATHS[year] = path
+        self._set_status(f"Created Finances_{year}.xlsx and made it active for {year}.", error=False)
         self.file_created.emit(year)
-        self.accept()

@@ -1,48 +1,53 @@
 """
-app/window.py — App: sidebar + top bar + page stack (Dashboard,
-Transactions, Analytics, Categories, Templates, Currencies). Watches the
-Finances directory and refreshes the current page ~2s after any external
-change settles (debounced), plus immediately after a local add/edit/delete.
+app/window.py — App: sidebar + page stack (Home, Analytics, Categories,
+Templates, Currencies, Review). Watches the Finances directory and
+refreshes the active page ~2s after any external change settles
+(debounced).
 
-Dashboard and Transactions are cheap (one month) and always refresh
-together on any period change. Analytics reads every month in its
-selected range and Categories doesn't depend on the viewed month at all,
-so both refresh lazily — only when they become the active page, or when
-the period changes while already active. Currencies is all-time/all-years
-by design (independent of the viewed month entirely), same lazy pattern
-as Categories.
+Home (app/pages/home_page.py) combines what used to be two separate
+top-level pages (Dashboard + Transactions) plus the month/year TopBar —
+that trio always shares the same viewed month, so they're one page now,
+not three things window.py has to keep in sync. Analytics, Categories,
+Currencies, and Review are all independent of "the viewed month" entirely
+(Categories/Currencies have their own year-scoping, Analytics always
+anchors at today) — each refreshes lazily, only when it becomes the
+active page. Templates is parked behind a WipPlaceholder pending a
+redesign (see CLAUDE.md's Recent changes) — the real `TemplatesPage`
+implementation is untouched, just not wired up right now.
 """
 from __future__ import annotations
+
+from datetime import date as Date
 
 from PyQt6.QtCore import QSize, QTimer, Qt
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
+from core.excel import registry
 from core.icons import icon
 from core.themes import c
 from core.watcher import FileWatcher
 
-from .components.create_file_dialog import CreateFileDialog
-from .components.manage_files_dialog import ManageFilesDialog
-from .components.topbar import TopBar
+from .components.rate_sync_worker import RateSyncWorker
+from .components.settings_dialog import SettingsDialog
 from .components.widgets import nav_chip_style
+from .components.wip_placeholder import WipPlaceholder
 from .pages.analytics_page import AnalyticsPage
 from .pages.categories_page import CategoriesPage
 from .pages.currencies_page import CurrenciesPage
-from .pages.dashboard_page import DashboardPage
-from .pages.templates_page import TemplatesPage
-from .pages.transactions_page import TransactionsPage
+from .pages.home_page import HomePage
+from .pages.review_page import ReviewPage
 
 _ICON_SIZE = QSize(22, 22)
 
 _DEBOUNCE_MS = 2000
 
-PG_DASHBOARD = 0
-PG_TRANSACTIONS = 1
-PG_ANALYTICS = 2
-PG_CATEGORIES = 3
-PG_TEMPLATES = 4
-PG_CURRENCIES = 5
+PG_HOME = 0
+PG_ANALYTICS = 1
+PG_CATEGORIES = 2
+PG_TEMPLATES = 3
+PG_CURRENCIES = 4
+PG_REVIEW = 5
 
 
 class App(QWidget):
@@ -53,26 +58,21 @@ class App(QWidget):
         self.setMinimumSize(1000, 640)
         self.setStyleSheet(f"background:{c('bg')};")
 
-        self._dashboard_page = DashboardPage()
-        self._transactions_page = TransactionsPage()
+        self._home_page = HomePage()
         self._analytics_page = AnalyticsPage()
         self._categories_page = CategoriesPage()
-        self._templates_page = TemplatesPage()
+        self._templates_page = WipPlaceholder("Templates")  # real TemplatesPage parked pending a redesign
         self._currencies_page = CurrenciesPage()
-        self._dashboard_page.view_all_clicked.connect(lambda: self._show_page(PG_TRANSACTIONS))
-        self._transactions_page.analytics_clicked.connect(lambda: self._show_page(PG_ANALYTICS))
+        self._review_page = ReviewPage()
+        self._home_page.analytics_clicked.connect(lambda: self._show_page(PG_ANALYTICS))
 
         self._stack = QStackedWidget()
-        self._stack.addWidget(self._dashboard_page)     # PG_DASHBOARD
-        self._stack.addWidget(self._transactions_page)  # PG_TRANSACTIONS
-        self._stack.addWidget(self._analytics_page)     # PG_ANALYTICS
-        self._stack.addWidget(self._categories_page)    # PG_CATEGORIES
-        self._stack.addWidget(self._templates_page)     # PG_TEMPLATES
-        self._stack.addWidget(self._currencies_page)    # PG_CURRENCIES
-
-        self._topbar = TopBar()
-        self._topbar.period_changed.connect(self._on_period_changed)
-        self._topbar.transaction_saved.connect(self._refresh_current)
+        self._stack.addWidget(self._home_page)        # PG_HOME
+        self._stack.addWidget(self._analytics_page)    # PG_ANALYTICS
+        self._stack.addWidget(self._categories_page)   # PG_CATEGORIES
+        self._stack.addWidget(self._templates_page)    # PG_TEMPLATES
+        self._stack.addWidget(self._currencies_page)   # PG_CURRENCIES
+        self._stack.addWidget(self._review_page)        # PG_REVIEW
 
         root_lay = QHBoxLayout(self)
         root_lay.setContentsMargins(0, 0, 0, 0)
@@ -83,21 +83,24 @@ class App(QWidget):
         right.setStyleSheet("background:transparent;")
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(20, 16, 20, 16)
-        right_lay.setSpacing(14)
-        right_lay.addWidget(self._topbar)
         right_lay.addWidget(self._stack, 1)
         root_lay.addWidget(right, 1)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(_DEBOUNCE_MS)
-        self._debounce.timeout.connect(self._refresh_current)
+        self._debounce.timeout.connect(self._refresh_active_page)
 
         self._watcher = FileWatcher(self)
         self._watcher.changed.connect(lambda _path: self._debounce.start())
         self._watcher.start()
 
-        self._refresh_current()
+        self._refresh_active_page()
+        self._catch_up_all_transactions()
+
+        self._rate_sync = RateSyncWorker(self)
+        self._rate_sync.sync_finished.connect(self._refresh_active_page)
+        self._rate_sync.start()
 
     def _build_sidebar(self) -> QWidget:
         sb = QWidget()
@@ -110,12 +113,12 @@ class App(QWidget):
 
         self._nav_btns: list[tuple[QPushButton, int, str]] = []
         for icon_name, tooltip, page_idx in [
-            ("dashboard", "Dashboard", PG_DASHBOARD),
-            ("transactions", "Transactions", PG_TRANSACTIONS),
+            ("dashboard", "Dashboard", PG_HOME),
             ("analytics", "Analytics", PG_ANALYTICS),
             ("categories", "Categories", PG_CATEGORIES),
-            ("templates", "Templates", PG_TEMPLATES),
+            ("templates", "Templates (in development)", PG_TEMPLATES),
             ("currencies", "Currencies", PG_CURRENCIES),
+            ("review", "Review — duplicates & outliers", PG_REVIEW),
         ]:
             btn = QPushButton()
             btn.setFixedSize(48, 44)
@@ -128,31 +131,21 @@ class App(QWidget):
 
         lay.addStretch()
 
-        create_file_btn = QPushButton()
-        create_file_btn.setFixedSize(48, 44)
-        create_file_btn.setIcon(icon("create-file", c("t2")))
-        create_file_btn.setIconSize(_ICON_SIZE)
-        create_file_btn.setToolTip("Create a new finances file")
-        create_file_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        create_file_btn.setStyleSheet(nav_chip_style(False, ghost=True, radius_key="lg"))
-        create_file_btn.clicked.connect(self._on_create_file)
-        lay.addWidget(create_file_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        manage_files_btn = QPushButton()
-        manage_files_btn.setFixedSize(48, 44)
-        manage_files_btn.setIcon(icon("settings", c("t2")))
-        manage_files_btn.setIconSize(_ICON_SIZE)
-        manage_files_btn.setToolTip("Manage files — see and move where each year's file lives")
-        manage_files_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        manage_files_btn.setStyleSheet(nav_chip_style(False, ghost=True, radius_key="lg"))
-        manage_files_btn.clicked.connect(self._on_manage_files)
-        lay.addWidget(manage_files_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        settings_btn = QPushButton()
+        settings_btn.setFixedSize(48, 44)
+        settings_btn.setIcon(icon("settings", c("t2")))
+        settings_btn.setIconSize(_ICON_SIZE)
+        settings_btn.setToolTip("Settings — files, create a new finances file")
+        settings_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        settings_btn.setStyleSheet(nav_chip_style(False, ghost=True, radius_key="lg"))
+        settings_btn.clicked.connect(self._on_settings)
+        lay.addWidget(settings_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._style_nav_buttons()
         return sb
 
     def _style_nav_buttons(self) -> None:
-        current = self._stack.currentIndex() if hasattr(self, "_stack") else PG_DASHBOARD
+        current = self._stack.currentIndex() if hasattr(self, "_stack") else PG_HOME
         for btn, idx, icon_name in self._nav_btns:
             selected = idx == current
             btn.setStyleSheet(nav_chip_style(selected, ghost=True, radius_key="lg"))
@@ -161,45 +154,57 @@ class App(QWidget):
     def _show_page(self, index: int) -> None:
         self._stack.setCurrentIndex(index)
         self._style_nav_buttons()
-        if index == PG_ANALYTICS:
-            self._analytics_page.refresh(self._topbar.year, self._topbar.month)
-        elif index == PG_CATEGORIES:
-            self._categories_page.refresh(self._topbar.year)
-        elif index == PG_CURRENCIES:
+        self._refresh_active_page()
+
+    def _catch_up_all_transactions(self) -> None:
+        """Rebuild the All Transactions sheet once per launch for every
+        DynamicSchema year — Monthly/Annual Summary and By Category are
+        live Excel formulas now (self-updating regardless of edit source),
+        but All Transactions is still a Python-maintained mirror (see
+        core/excel/derived_sheets.py), so it can otherwise lag behind
+        transactions entered directly in Excel (e.g. from a phone) until
+        the app happens to write something of its own. One year's schema
+        failing (a legacy/broken file) must not block the rest."""
+        for year in registry.supported_years():
+            try:
+                schema = registry.get_schema_for_date(Date(year, 1, 1))
+                schema._refresh_derived_sheets()
+            except (ValueError, AttributeError):
+                continue
+
+    def _refresh_active_page(self) -> None:
+        idx = self._stack.currentIndex()
+        if idx == PG_HOME:
+            self._home_page.refresh_current()
+        elif idx == PG_ANALYTICS:
+            self._analytics_page.refresh()
+        elif idx == PG_CATEGORIES:
+            self._categories_page.refresh()
+        elif idx == PG_CURRENCIES:
             self._currencies_page.refresh()
+        elif idx == PG_REVIEW:
+            self._review_page.refresh()
+        # PG_TEMPLATES is a WIP placeholder — nothing to refresh.
 
-    def _on_period_changed(self, year: int, month: int) -> None:
-        self._dashboard_page.refresh(year, month)
-        self._transactions_page.refresh(year, month)
-        if self._stack.currentIndex() == PG_ANALYTICS:
-            self._analytics_page.refresh(year, month)
-        self._topbar.mark_updated()
-
-    def _refresh_current(self) -> None:
-        self._on_period_changed(self._topbar.year, self._topbar.month)
-
-    def _on_create_file(self) -> None:
-        dlg = CreateFileDialog(parent=self)
+    def _on_settings(self) -> None:
+        dlg = SettingsDialog(parent=self)
         dlg.file_created.connect(self._on_file_created)
         dlg.manage_templates_requested.connect(lambda: self._show_page(PG_TEMPLATES))
+        dlg.files_changed.connect(self._on_files_changed)
         dlg.exec()
 
     def _on_file_created(self, year: int) -> None:
         self._watcher.rewatch()  # start watching the new file's folder too
-        self._analytics_page.refresh_years()
         self._categories_page.refresh_years()
-        self._refresh_current()
-
-    def _on_manage_files(self) -> None:
-        dlg = ManageFilesDialog(parent=self)
-        dlg.files_changed.connect(self._on_files_changed)
-        dlg.exec()
+        self._refresh_active_page()
 
     def _on_files_changed(self) -> None:
         self._watcher.rewatch()  # a move can put a file in a not-yet-watched folder
-        self._topbar.refresh_active_file_label()
-        self._refresh_current()
+        self._home_page.refresh_active_file_label()
+        self._refresh_active_page()
 
     def closeEvent(self, e):
         self._watcher.stop()
+        if self._rate_sync.isRunning():
+            self._rate_sync.wait(3000)
         super().closeEvent(e)

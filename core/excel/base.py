@@ -27,6 +27,12 @@ class CategoryExistsError(Exception):
     """Raised when adding a category that (case-insensitively) already exists."""
 
 
+class CategoryInUseError(Exception):
+    """Raised when deleting a category that's still used by at least one
+    transaction — merge it into another category, or reassign those
+    transactions, first."""
+
+
 class YearSchema(ABC):
     EXPENSE_TYPE: str = ""
     INCOME_TYPE: str = ""
@@ -78,6 +84,27 @@ class YearSchema(ABC):
         already exists as a different category."""
 
     @abstractmethod
+    def delete_category(self, name: str) -> None:
+        """Remove a category from the dropdown list. Raises CategoryInUseError
+        if any transaction still uses it (merge it into another category, or
+        reassign those transactions, first), or ValueError if it doesn't
+        exist."""
+
+    @abstractmethod
+    def merge_category(self, source: str, target: str) -> int:
+        """Reassign every transaction using `source` to `target` (every month
+        sheet, and AllData where applicable), then remove `source` from the
+        category list. Returns the number of transaction rows updated.
+        Raises ValueError if source == target or either name isn't a real
+        category."""
+
+    @abstractmethod
+    def reorder_categories(self, new_order: list[str]) -> None:
+        """Change the order categories appear in (dropdowns, this page's own
+        list) to `new_order` — must contain exactly the same categories as
+        get_categories(), just reordered. Raises ValueError otherwise."""
+
+    @abstractmethod
     def get_types(self) -> list[str]:
         """Transaction types for the dropdown, in sheet order."""
 
@@ -95,14 +122,46 @@ class YearSchema(ABC):
         in a single implicit currency, e.g. Schema2025/Schema2026's Kč)."""
         return None
 
-    def to_base_amount(self, amount: float, currency: str | None) -> float:
-        """Convert one transaction's native amount(+currency) to this year's
-        base currency, using the file's *current* rate table — not a
-        historical snapshot (old months' converted totals shift if rates
-        are later edited; this matches the same simplification the Excel
-        side's own rate-lookup formula already has). Default: no currency
-        tracking, amount is already the only currency in use, unchanged."""
+    def to_base_amount(self, amount: float, currency: str | None, date: Date | None = None) -> float:
+        """Convert one transaction's native amount(+currency) to this
+        year's base currency. If `date` is given and a historical rate for
+        that exact day is cached (core/rate_history.py, backfilled by
+        RateSyncWorker from ČNB/NBU), that's used — otherwise falls back
+        to the file's *current* rate table, same as before `date` support
+        existed. Default: no currency tracking, amount is already the
+        only currency in use, unchanged."""
         return amount
+
+    def refresh_converted_amounts(self, currency: str, date: Date, rate: float) -> int:
+        """Rewrite the Rate/Amount (base currency) columns (if this
+        schema's template has them) for every transaction on `date` in
+        `currency`, using `rate` — called after a background rate sync
+        fetches an improved rate for that exact (currency, date) pair.
+        Default: no such columns exist, nothing to rewrite. Returns the
+        number of rows updated."""
+        return 0
+
+    def resolve_rate(self, currency: str | None, date: Date | None) -> float | None:
+        """The rate (native currency -> base) for one unit of `currency` on
+        `date` — 1.0 for the base currency itself, else prefers a cached
+        historical rate, falls back to the file's current rate table.
+        Genuinely `None` (not a misleading fake 1.0) if nothing is known
+        at all yet — used to prefill the rate-override field in the
+        transaction dialog, and internally by to_base_amount()/
+        _write_transaction(). Default: no currency tracking, nothing to
+        resolve."""
+        return None
+
+    def convert_transaction(self, tx: dict) -> float:
+        """The base-currency amount for one transaction dict (as returned
+        by transactions_for_month()) — the single place every page should
+        call for this instead of calling to_base_amount() itself (see
+        DynamicSchema's implementation: prefers a persisted Amount(base)
+        cell, else resolves fresh via to_base_amount() — Income and
+        Expense use the exact same rule, pinned to the transaction's own
+        date). Default: no currency tracking, the amount is already in the
+        only currency in use, unchanged."""
+        return tx.get("amount") or 0.0
 
     def get_rates(self) -> dict[str, float] | None:
         """The raw currency -> rate-to-base table, or None if this year has
@@ -110,6 +169,12 @@ class YearSchema(ABC):
         converting between two arbitrary currencies, not just currency ->
         base — e.g. the Currencies page's "total right now, in currency X"
         figure, where X isn't necessarily this year's own base currency."""
+        return None
+
+    def update_current_rate(self, currency: str, rate: float) -> None:
+        """Overwrite this year's "current rate" table for `currency` --
+        called after a background sync fetches a fresh rate. Default: no
+        currency tracking, nothing to update."""
         return None
 
     @abstractmethod
@@ -122,8 +187,15 @@ class YearSchema(ABC):
         payment_type: str | None,
         note: str,
         currency: str | None = None,
+        rate: float | None = None,
     ) -> None:
-        """Write a new transaction row. Raises SheetFullError if the month is full."""
+        """Write a new transaction row. Raises SheetFullError if the month is
+        full. `rate` is an optional manual override (e.g. the real rate a
+        bank card charged, including its own markup, vs. the official
+        historical rate) — when given, it's used as-is instead of being
+        resolved automatically, and persisted so it isn't silently
+        overwritten by a later background sync. Ignored by schemas with no
+        currency tracking."""
 
     @abstractmethod
     def update_transaction(
@@ -136,10 +208,12 @@ class YearSchema(ABC):
         payment_type: str | None,
         note: str,
         currency: str | None = None,
+        rate: float | None = None,
     ) -> None:
         """Replace an existing transaction (as returned by transactions_for_month)
         with new values. Raises TransactionNotFoundError if `tx` no longer
-        matches what's on disk, or SheetFullError if the target month is full."""
+        matches what's on disk, or SheetFullError if the target month is full.
+        `rate` — see add_transaction()."""
 
     @abstractmethod
     def delete_transaction(self, tx: dict) -> None:

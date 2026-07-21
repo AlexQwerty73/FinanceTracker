@@ -8,9 +8,9 @@ the balance/cash-flow charts are a fixed, small, semantically meaningful
 pair/sign (income=green, expense=red; above/below zero), matching the stat
 tiles and InvestTracker's buy/sell convention — position and a zero
 baseline carry identity too, so it never rests on color alone. The category
-breakdown bar and the calendar heatmap are single-series magnitude, so they
-get one hue each (never color-per-category there — that would spend the
-identity channel re-encoding what length/intensity already shows).
+breakdown bar is single-series magnitude, so it gets one hue (never
+color-per-category there — that would spend the identity channel
+re-encoding what length/intensity already shows).
 
 Every chart redraws via draw_idle() (not draw()) so Qt can coalesce rapid
 successive updates — e.g. flipping through months fires several charts'
@@ -20,22 +20,18 @@ mark carries no value on its own without pointing at a number.
 """
 from __future__ import annotations
 
-from datetime import date as _date, timedelta as _timedelta
-
 import matplotlib
 matplotlib.use("QtAgg")
 
 import matplotlib.patheffects as patheffects
-import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 from PyQt6.QtCore import QPoint
 from PyQt6.QtWidgets import QSizePolicy, QToolTip
 
 from core.excel.base import MONTH_NAMES
 from core.format import fmt_amount
-from core.themes import CATEGORICAL, CATEGORICAL_OTHER, HEATMAP_BUCKETS, c
+from core.themes import CATEGORICAL, CATEGORICAL_OTHER, c
 
 _FONT = "Segoe UI"
 _TOP_CATEGORIES = 7  # token ceiling; the tail folds into "Other"
@@ -392,124 +388,86 @@ class BalanceLineChart(_HoverCanvas):
         return f"{self._labels[nearest]}: {fmt_amount(self._values[nearest])}"
 
 
-class CalendarHeatmap(_HoverCanvas):
-    """True GitHub-style calendar heatmap: columns = weeks of the year, rows
-    = weekday (Mon..Sun), color = a discrete 5-step bucket (none / 4
-    quartile levels of that day's expenses) — bucketed rather than a smooth
-    gradient so activity actually stands out instead of blurring into
-    near-identical shades. Magnitude, so one hue family, never
-    color-per-day-of-week."""
+class IncomeExpenseLineChart(_HoverCanvas):
+    """Two-line time series — each point is that period's own (not
+    cumulative) income/expense, so the chart reads as "how much per
+    month/day" rather than a running total. Same real-day-offset x-axis
+    convention as BalanceLineChart. Fixed semantic colors (income=green,
+    expense=red), same pairing already used everywhere else in this app."""
 
     def __init__(self, parent=None):
-        fig = Figure(figsize=(10, 2.4), dpi=100, facecolor=c("chart_bg"))
+        fig = Figure(figsize=(7, 2.6), dpi=100, facecolor=c("chart_bg"))
         super().__init__(fig)
         if parent is not None:
             self.setParent(parent)
         self.setStyleSheet("background:transparent;")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(200)
         self._ax = fig.add_subplot(111, facecolor=c("chart_bg"))
-        fig.subplots_adjust(left=0.04, right=0.995, top=0.88, bottom=0.05)
-        self._daily: dict[tuple[int, int], float] | None = None
-        self._year = 0
-        self._cell_info: dict[tuple[int, int], tuple[int, int, float]] = {}  # (weekday,week) -> (month,day,amount)
+        fig.subplots_adjust(left=0.07, right=0.97, top=0.9, bottom=0.18)
+        self._labels: list[str] = []
+        self._income: list[float] = []
+        self._expense: list[float] = []
+        self._x: list[float] = []
 
     def update_data(
-        self, daily: dict[tuple[int, int], float] | None, year: int, end_date: _date | None = None,
+        self, points: list[tuple[str, float, float, float]], x_range: tuple[float, float] | None = None,
     ) -> None:
-        """daily: {(month, day): amount}, or None if this year has no daily
-        dates to plot (e.g. the legacy 2025 schema). end_date caps the grid
-        at that day (e.g. today, for the current year) instead of always
-        reserving space out to Dec 31 — otherwise a still-in-progress year
-        leaves most of the chart blank instead of using the full width for
-        the days that actually happened."""
+        """points: [(label, income_value, expense_value, x_position), ...], oldest first."""
         ax = self._ax
         ax.clear()
         ax.set_facecolor(c("chart_bg"))
-        self._daily = daily
-        self._year = year
-        self._cell_info = {}
+        self._labels = [p[0] for p in points]
+        self._income = [p[1] for p in points]
+        self._expense = [p[2] for p in points]
+        self._x = [p[3] for p in points]
 
-        if daily is None:
-            _empty_state(ax, "No daily dates in this year's data")
-            ax.set_xticks([])
-            ax.set_yticks([])
+        if not points:
+            _empty_state(ax, "No data")
+            _style_axes(ax)
+            if x_range is not None:
+                ax.set_xlim(*x_range)
             self.draw_idle()
             return
 
-        jan1 = _date(year, 1, 1)
-        last_day = min(end_date, _date(year, 12, 31)) if end_date else _date(year, 12, 31)
-        n_days = (last_day - jan1).days + 1
-        jan1_weekday = jan1.weekday()  # Monday = 0
-        n_weeks = (jan1_weekday + n_days + 6) // 7
+        ax.plot(self._x, self._income, color=c("income_c"), linewidth=2, marker="o", markersize=4, label="Income")
+        ax.plot(self._x, self._expense, color=c("expense_c"), linewidth=2, marker="o", markersize=4, label="Expense")
 
-        nonzero = sorted(v for v in daily.values() if v > 0)
+        if x_range is not None:
+            ax.set_xlim(*x_range)
+        else:
+            x_min, x_max = min(self._x), max(self._x)
+            pad = (x_max - x_min) * 0.02 or 1
+            ax.set_xlim(x_min - pad, x_max + pad)
+        y_max = max(self._income + self._expense, default=0)
+        y_pad = y_max * 0.1 or 1
+        ax.set_ylim(0, y_max + y_pad)
 
-        def _threshold(pct: float) -> float:
-            idx = min(len(nonzero) - 1, int(pct * len(nonzero)))
-            return nonzero[idx]
+        step = max(1, len(points) // 12)
+        tick_idx = list(range(0, len(points), step))
+        ax.set_xticks([self._x[i] for i in tick_idx])
+        rotate = len(tick_idx) > 8
+        ax.set_xticklabels(
+            [self._labels[i] for i in tick_idx], rotation=45 if rotate else 0, ha="right" if rotate else "center"
+        )
+        ax.set_yticks([])
+        legend = ax.legend(loc="upper left", fontsize=8, frameon=False, labelcolor=c("t2"))
+        for text in legend.get_texts():
+            text.set_fontfamily(_FONT)
 
-        thresholds = (_threshold(0.25), _threshold(0.50), _threshold(0.75)) if nonzero else (1.0, 2.0, 3.0)
-
-        grid = np.full((7, n_weeks), np.nan)
-        month_label_week: dict[int, str] = {}
-        for offset in range(n_days):
-            day_date = jan1 + _timedelta(days=offset)
-            week_idx = (offset + jan1_weekday) // 7
-            weekday_idx = day_date.weekday()
-            amount = daily.get((day_date.month, day_date.day), 0.0)
-            self._cell_info[(weekday_idx, week_idx)] = (day_date.month, day_date.day, amount)
-
-            if amount <= 0:
-                bucket = 0
-            elif amount <= thresholds[0]:
-                bucket = 1
-            elif amount <= thresholds[1]:
-                bucket = 2
-            elif amount <= thresholds[2]:
-                bucket = 3
-            else:
-                bucket = 4
-            grid[weekday_idx, week_idx] = bucket
-
-            if day_date.day == 1:
-                month_label_week[week_idx] = MONTH_NAMES[day_date.month - 1][:3]
-
-        cmap = ListedColormap(HEATMAP_BUCKETS)
-        cmap.set_bad(color=c("bg"))
-        masked = np.ma.masked_invalid(grid)
-        ax.imshow(masked, cmap=cmap, vmin=-0.5, vmax=4.5, aspect="auto")
-        # Explicit, not left to lazy autoscale — otherwise switching from a
-        # year with more weeks to one with fewer would leave the old, wider
-        # xlim in place (see BalanceLineChart's relim/autoscale_view note).
-        ax.set_xlim(-0.5, n_weeks - 0.5)
-        ax.set_ylim(6.5, -0.5)
-
-        ax.set_yticks(range(7))
-        ax.set_yticklabels(["Mon", "", "Wed", "", "Fri", "", "Sun"])
-        week_ticks = sorted(month_label_week)
-        ax.set_xticks(week_ticks)
-        ax.set_xticklabels([month_label_week[w] for w in week_ticks])
-        ax.xaxis.tick_top()
-
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.tick_params(colors=c("t2"), labelsize=8, length=0)
-        for label in ax.get_xticklabels() + ax.get_yticklabels():
-            label.set_fontfamily(_FONT)
-
+        _style_axes(ax)
         self.draw_idle()
 
     def _hit_test(self, event) -> str | None:
-        if not self._cell_info or event.xdata is None or event.ydata is None:
+        if not self._x or event.xdata is None:
             return None
-        week = round(event.xdata)
-        weekday = round(event.ydata)
-        info = self._cell_info.get((weekday, week))
-        if info is None:
+        nearest = min(range(len(self._x)), key=lambda i: abs(self._x[i] - event.xdata))
+        span = (max(self._x) - min(self._x)) or 1
+        gaps = [b - a for a, b in zip(self._x, self._x[1:])] or [span]
+        tolerance = max(span * 0.02, (sum(gaps) / len(gaps)) * 0.6)
+        if abs(self._x[nearest] - event.xdata) > tolerance:
             return None
-        month, day, amount = info
-        label = f"{MONTH_NAMES[month - 1]} {day}, {self._year}"
-        if amount <= 0:
-            return f"{label}: no expenses"
-        return f"{label}: {fmt_amount(amount)}"
+        return (f"{self._labels[nearest]}: Income {fmt_amount(self._income[nearest])} "
+                f"/ Expense {fmt_amount(self._expense[nearest])}")
+
+

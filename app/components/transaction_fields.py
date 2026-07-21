@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date as Date
 
-from PyQt6.QtCore import QDate
+from PyQt6.QtCore import QDate, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QDateEdit, QLabel, QLineEdit, QVBoxLayout, QWidget
 
@@ -41,6 +41,9 @@ def field_label(text: str) -> QLabel:
 
 
 class TransactionFields(QWidget):
+    changed = pyqtSignal()  # date, currency, or amount changed -- for callers that show
+                            # derived info (e.g. TransactionDialog's rate-conversion preview)
+
     def __init__(self, parent=None, remember_payment: bool = False):
         super().__init__(parent)
         self._loaded_year: int | None = None
@@ -58,6 +61,7 @@ class TransactionFields(QWidget):
         self._date.setFixedHeight(FIELD_HEIGHT)
         self._date.setStyleSheet(input_style())
         self._date.dateChanged.connect(self._on_date_changed)
+        self._date.dateChanged.connect(lambda _d: self.changed.emit())
         lay.addWidget(self._date)
 
         lay.addWidget(field_label("Type"))
@@ -99,6 +103,9 @@ class TransactionFields(QWidget):
         self._notes_field.setFixedHeight(FIELD_HEIGHT)
         self._notes_field.setStyleSheet(input_style())
         lay.addWidget(self._notes_field)
+
+        self._currency_combo.currentTextChanged.connect(lambda _t: self.changed.emit())
+        self._amount_field.textChanged.connect(lambda _t: self.changed.emit())
 
         self._on_date_changed(self._date.date())
 

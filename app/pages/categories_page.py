@@ -2,23 +2,28 @@
 app/pages/categories_page.py — CategoriesPage: manage each year's category
 list in one place. Renaming propagates to every transaction that uses the
 old name (every month sheet, plus AllData for 2026) — fix a typo once here
-instead of chasing it through every row it was ever entered on.
+instead of chasing it through every row it was ever entered on. Merge
+reassigns one category's transactions into another, then removes the
+source category. Delete only succeeds on a category with zero
+transactions — merge first if it's in use.
 """
 from __future__ import annotations
 
 from datetime import date as Date
 
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QVBoxLayout, QWidget,
 )
 
 from core.excel import registry
-from core.excel.base import CategoryExistsError
+from core.excel.base import CategoryExistsError, CategoryInUseError
 from core.excel.workbook_io import WorkbookLockedError
 from core.themes import FIELD_HEIGHT, c, radius
 
 from ..components.transaction_fields import input_style
-from ..components.widgets import NoWheelComboBox, bordered_box, primary_button, scrollable_area, section_label
+from ..components.widgets import (
+    NoWheelComboBox, bordered_box, primary_button, scrollable_area, secondary_button, section_label,
+)
 
 
 class CategoriesPage(QWidget):
@@ -62,11 +67,14 @@ class CategoriesPage(QWidget):
         list_lay.addWidget(section_label("Categories"))
         self._list = QListWidget()
         self._list.setMinimumHeight(320)
+        self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._list.setToolTip("Drag to reorder — this is the order categories show up in dropdowns.")
         self._list.setStyleSheet(f"""
             QListWidget {{ background:{c('in_bg')}; color:{c('t1')}; border:none; border-radius:8px; }}
             QListWidget::item {{ padding:6px 8px; }}
             QListWidget::item:selected {{ background:{c('btn_bg')}; color:{c('ac')}; }}
         """)
+        self._list.model().rowsMoved.connect(self._on_reordered)
         list_lay.addWidget(self._list, 1)
         body.addWidget(list_box, 1)
 
@@ -99,6 +107,31 @@ class CategoriesPage(QWidget):
         rename_btn = primary_button("Rename everywhere")
         rename_btn.clicked.connect(self._on_rename)
         actions_lay.addWidget(rename_btn)
+
+        actions_lay.addSpacing(12)
+        actions_lay.addWidget(section_label("Merge selected into…"))
+        self._merge_hint = QLabel("Select a category on the left first.")
+        self._merge_hint.setWordWrap(True)
+        self._merge_hint.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        actions_lay.addWidget(self._merge_hint)
+        self._merge_combo = NoWheelComboBox()
+        self._merge_combo.setFixedHeight(FIELD_HEIGHT)
+        self._merge_combo.setStyleSheet(input_style())
+        actions_lay.addWidget(self._merge_combo)
+        merge_btn = primary_button("Merge")
+        merge_btn.clicked.connect(self._on_merge)
+        actions_lay.addWidget(merge_btn)
+
+        actions_lay.addSpacing(12)
+        actions_lay.addWidget(section_label("Delete selected category"))
+        delete_hint = QLabel("Only works if nothing uses it — merge it into another category first otherwise.")
+        delete_hint.setWordWrap(True)
+        delete_hint.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        actions_lay.addWidget(delete_hint)
+        delete_btn = secondary_button("Delete")
+        delete_btn.clicked.connect(self._on_delete)
+        actions_lay.addWidget(delete_btn)
+
         actions_lay.addStretch()
 
         body.addWidget(actions_box, 1)
@@ -112,8 +145,9 @@ class CategoriesPage(QWidget):
 
     def refresh_years(self) -> None:
         """Repopulate the Year dropdown — call after a new year's file is
-        created via CreateFileDialog, since registry.supported_years() can
-        grow at runtime and this combo was only populated once at init."""
+        created via the Settings dialog's "Create New File" tab, since
+        registry.supported_years() can grow at runtime and this combo was
+        only populated once at init."""
         current = self._year_combo.currentText()
         self._year_combo.blockSignals(True)
         self._year_combo.clear()
@@ -131,9 +165,22 @@ class CategoriesPage(QWidget):
         if text:
             self._rename_hint.setText(f'Renaming "{text}" — this updates every transaction that uses it.')
             self._rename_field.setText(text)
+            self._merge_hint.setText(f'Merging "{text}" into whatever you pick below — this reassigns its transactions.')
         else:
             self._rename_hint.setText("Select a category on the left first.")
             self._rename_field.clear()
+            self._merge_hint.setText("Select a category on the left first.")
+        self._refresh_merge_targets(exclude=text)
+
+    def _refresh_merge_targets(self, exclude: str) -> None:
+        current = self._merge_combo.currentText()
+        others = [self._list.item(i).text() for i in range(self._list.count()) if self._list.item(i).text() != exclude]
+        self._merge_combo.blockSignals(True)
+        self._merge_combo.clear()
+        self._merge_combo.addItems(others)
+        if current in others:
+            self._merge_combo.setCurrentText(current)
+        self._merge_combo.blockSignals(False)
 
     def refresh(self, year: int | None = None) -> None:
         if year is not None:
@@ -150,6 +197,7 @@ class CategoriesPage(QWidget):
         self._set_status("", error=False)
         self._list.clear()
         self._list.addItems(categories)
+        self._refresh_merge_targets(exclude=self._list.currentItem().text() if self._list.currentItem() else "")
 
     def _on_add(self) -> None:
         name = self._add_field.text().strip()
@@ -187,3 +235,57 @@ class CategoriesPage(QWidget):
             return
         self._set_status(f'Renamed "{old_name}" → "{new_name}" ({count} transaction(s) updated).', error=False)
         self.refresh(self._year)
+
+    def _on_merge(self) -> None:
+        item = self._list.currentItem()
+        if item is None:
+            self._set_status("Select a category to merge first.", error=True)
+            return
+        source = item.text()
+        target = self._merge_combo.currentText()
+        if not target:
+            self._set_status("Pick a category to merge into.", error=True)
+            return
+        reply = QMessageBox.question(
+            self, "Merge category",
+            f'Merge "{source}" into "{target}"?\n\n'
+            f'Every transaction currently using "{source}" will be reassigned to "{target}", '
+            f'then "{source}" is removed from the list. This can\'t be undone automatically.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            schema = registry.get_schema_for_date(Date(self._year, 1, 1))
+            count = schema.merge_category(source, target)
+        except (WorkbookLockedError, ValueError) as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(f'Merged "{source}" into "{target}" ({count} transaction(s) reassigned).', error=False)
+        self.refresh(self._year)
+
+    def _on_delete(self) -> None:
+        item = self._list.currentItem()
+        if item is None:
+            self._set_status("Select a category to delete first.", error=True)
+            return
+        name = item.text()
+        try:
+            schema = registry.get_schema_for_date(Date(self._year, 1, 1))
+            schema.delete_category(name)
+        except (CategoryInUseError, WorkbookLockedError, ValueError) as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(f'Deleted "{name}".', error=False)
+        self.refresh(self._year)
+
+    def _on_reordered(self, *_args) -> None:
+        new_order = [self._list.item(i).text() for i in range(self._list.count())]
+        try:
+            schema = registry.get_schema_for_date(Date(self._year, 1, 1))
+            schema.reorder_categories(new_order)
+        except (WorkbookLockedError, ValueError) as exc:
+            self._set_status(str(exc), error=True)
+            self.refresh(self._year)  # revert the list to whatever's actually on disk
+            return
+        self._set_status("Order saved.", error=False)

@@ -1,22 +1,36 @@
 """
 app/pages/currencies_page.py — CurrenciesPage: net worth / opening-balance
-snapshot across every currency-tracked year, plus a per-currency
-balance-over-time view and transaction list. All-time / all-years by
-design (not scoped to the TopBar's selected month) — refreshed lazily
-when the page becomes visible, mirroring Analytics/Categories.
+across every currency-tracked year. All-time / all-years by design (not
+scoped to the TopBar's selected month) — refreshed lazily when the page
+becomes visible, mirroring Analytics/Categories.
 
-Opening balance: the user enters *today's* real cash+card amount per
-currency; this page subtracts the net effect of every recorded
-transaction in that currency (income adds, expense subtracts, cash/card
-split the same way AnalyticsPage._cash_card_delta classifies it — but in
-NATIVE currency units here, not converted to any base currency) to back
-out what the balance must have been before the first transaction.
+Net worth entry happens through a single "Take snapshot" form (opens
+TakeSnapshotDialog) instead of inline per-currency fields — one form, one
+date (always today), every currency at once. Saving it computes and
+permanently freezes (core.net_worth_ledger.compute_full_ledger) both the
+balance before the very first transaction ("opening") and the balance at
+the 1st of every month since — a real historical ledger, not a live
+recalculation. Every stored snapshot (not just the active one) keeps that
+ledger extending forward every time this page is opened
+(_extend_all_snapshots()), for as long as it isn't deleted from
+ManageSnapshotsDialog — so switching which snapshot is active later still
+has an up-to-date ledger. One page-wide "Use snapshot" checkbox decides
+whether the active snapshot's numbers are actually applied at all
+(settings.get/set_net_worth_snapshot_use_enabled) — independent of which
+snapshot is currently marked active.
 
-"Total right now" converts every currency's current cash+card figure
-into one chosen currency at *today's* rate (read fresh from whichever
-currency-tracked year's Lists sheet is most current) — a deliberately
-different number from any transaction's own converted total, which used
-whatever rate was in effect when it was read, not necessarily today's.
+"Total right now" converts the active snapshot's cash+card figures into
+one chosen currency at *today's* rate (read fresh from whichever
+currency-tracked year's Lists sheet is most current).
+
+"Movement by currency" (a per-currency chart + transaction list) draws
+straight from the applied snapshot's own frozen monthly_history when one
+exists — real historical cash+card totals, not a relative-to-zero running
+sum — falling back to the old 0-anchored behavior when no snapshot is
+applied. Deliberately native-currency (no base-currency conversion, no
+today's-rate dependency) — that's also why this stays a Currencies-page
+feature instead of living on Analytics (which is a converted,
+cross-currency aggregate; see "Ideas — not yet built" for that trade-off).
 """
 from __future__ import annotations
 
@@ -24,19 +38,21 @@ from datetime import date as Date
 
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QCheckBox, QGridLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core import settings
 from core.excel import registry
 from core.excel.base import MONTH_NAMES, YearSchema
 from core.format import fmt_amount
+from core.net_worth_ledger import balance_at, month_starts
 from core.themes import c, font_size
 
 from ..components.charts import BalanceLineChart
+from ..components.net_worth_snapshot_dialog import ManageSnapshotsDialog, TakeSnapshotDialog
+from ..components.rate_sync_worker import RateSyncWorker
 from ..components.transaction_fields import field_label, input_style
-from ..components.widgets import NoWheelComboBox, card, scrollable_area, section_label
+from ..components.widgets import NoWheelComboBox, card, scrollable_area, secondary_button, section_label
 
 
 def _currency_tracked_years() -> list[int]:
@@ -53,8 +69,8 @@ def _currency_tracked_years() -> list[int]:
 
 def _all_currency_transactions() -> list[tuple[YearSchema, dict]]:
     """(schema, tx) for every transaction in every currency-tracked year,
-    every month — the base dataset both the net-worth calc and the
-    per-currency chart/list scan over."""
+    every month — the base dataset the net-worth ledger and the
+    per-currency chart/list both scan over."""
     out = []
     for y in _currency_tracked_years():
         schema = registry.get_schema_for_date(Date(y, 1, 1))
@@ -63,21 +79,6 @@ def _all_currency_transactions() -> list[tuple[YearSchema, dict]]:
                 if tx.get("currency"):
                     out.append((schema, tx))
     return out
-
-
-def _native_cash_card_delta(schema, tx: dict) -> tuple[float, float]:
-    """Same classification as AnalyticsPage._cash_card_delta, but in the
-    transaction's own native currency units (no base-currency conversion)
-    — this page needs "how much of currency X moved through cash/card",
-    not a cross-currency total."""
-    t, payment, amt = tx.get("type"), tx.get("payment_type"), tx.get("amount") or 0
-    cash_delta = 0.0
-    if schema.is_cash_in_type(t):
-        cash_delta += amt
-    elif schema.is_cash_out_type(t) or (schema.is_expense_type(t) and payment == "Cash"):
-        cash_delta -= amt
-    balance_delta = amt if schema.is_income_type(t) else (-amt if schema.is_expense_type(t) else 0.0)
-    return cash_delta, balance_delta - cash_delta
 
 
 def _sort_key(item: tuple[YearSchema, dict]) -> tuple:
@@ -89,19 +90,13 @@ def _sort_key(item: tuple[YearSchema, dict]) -> tuple:
     return (1, date_val)
 
 
-def _parse_amount(text: str) -> float:
-    try:
-        return float(text.strip().replace(",", "."))
-    except ValueError:
-        return 0.0
-
-
 class CurrenciesPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._all_txs: list[tuple[YearSchema, dict]] = []
         self._currencies: list[str] = []
-        self._nw_rows: dict[str, tuple[QLineEdit, QLineEdit, QLabel, QLabel]] = {}
+        self._opening_labels: dict[str, tuple[QLabel, QLabel]] = {}
+        self._rate_sync: RateSyncWorker | None = None
 
         outer_lay = QVBoxLayout(self)
         outer_lay.setContentsMargins(0, 0, 0, 0)
@@ -122,8 +117,9 @@ class CurrenciesPage(QWidget):
         # ── Net worth card ───────────────────────────────────────────────
         self._nw_box, nw_lay = card("Net worth")
         nw_helper = QLabel(
-            "Enter what you actually have right now — the opening balance "
-            "(before your first recorded transaction) is worked out automatically."
+            "Take a snapshot of what you actually have — Opening balance (before your first "
+            "recorded transaction) and the balance at the start of every month are worked out "
+            "and frozen automatically."
         )
         nw_helper.setWordWrap(True)
         nw_helper.setFont(QFont("Segoe UI", font_size("micro")))
@@ -143,6 +139,26 @@ class CurrenciesPage(QWidget):
         self._nw_grid.setSpacing(8)
         nw_lay.addWidget(self._nw_grid_host)
 
+        snapshot_row = QHBoxLayout()
+        snapshot_row.setContentsMargins(0, 8, 0, 0)
+        take_btn = secondary_button("Take snapshot")
+        take_btn.clicked.connect(self._on_take_snapshot_clicked)
+        snapshot_row.addWidget(take_btn)
+        manage_btn = secondary_button("Manage snapshots")
+        manage_btn.clicked.connect(self._on_manage_snapshots_clicked)
+        snapshot_row.addWidget(manage_btn)
+        self._use_snapshot_check = QCheckBox("Use snapshot in calculations")
+        self._use_snapshot_check.toggled.connect(self._on_use_toggled)
+        snapshot_row.addWidget(self._use_snapshot_check)
+        snapshot_row.addStretch()
+        nw_lay.addLayout(snapshot_row)
+
+        self._snapshot_status_lbl = QLabel("")
+        self._snapshot_status_lbl.setWordWrap(True)
+        self._snapshot_status_lbl.setFont(QFont("Segoe UI", font_size("micro")))
+        self._snapshot_status_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        nw_lay.addWidget(self._snapshot_status_lbl)
+
         self._total_row_host = QWidget()
         self._total_row_host.setStyleSheet("background:transparent;")
         total_row = QHBoxLayout(self._total_row_host)
@@ -160,9 +176,21 @@ class CurrenciesPage(QWidget):
         total_row.addWidget(self._total_lbl)
         nw_lay.addWidget(self._total_row_host)
 
+        rate_sync_row = QHBoxLayout()
+        rate_sync_row.setContentsMargins(0, 8, 0, 0)
+        self._refresh_rates_btn = secondary_button("Refresh rates")
+        self._refresh_rates_btn.clicked.connect(self._on_refresh_rates_clicked)
+        rate_sync_row.addWidget(self._refresh_rates_btn)
+        self._rate_sync_status = QLabel("")
+        self._rate_sync_status.setFont(QFont("Segoe UI", font_size("micro")))
+        self._rate_sync_status.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        rate_sync_row.addWidget(self._rate_sync_status)
+        rate_sync_row.addStretch()
+        nw_lay.addLayout(rate_sync_row)
+
         lay.addWidget(self._nw_box)
 
-        # ── Per-currency movement card ───────────────────────────────────
+        # ── Per-currency movement card ─────────────────────────────────────
         move_box, move_lay = card("Movement by currency")
         picker_row = QHBoxLayout()
         picker_row.addWidget(field_label("Currency"))
@@ -173,6 +201,11 @@ class CurrenciesPage(QWidget):
         picker_row.addWidget(self._currency_combo)
         picker_row.addStretch()
         move_lay.addLayout(picker_row)
+
+        self._chart_anchor_lbl = QLabel("")
+        self._chart_anchor_lbl.setFont(QFont("Segoe UI", font_size("micro")))
+        self._chart_anchor_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        move_lay.addWidget(self._chart_anchor_lbl)
 
         self._chart = BalanceLineChart()
         move_lay.addWidget(self._chart)
@@ -202,8 +235,11 @@ class CurrenciesPage(QWidget):
     def refresh(self) -> None:
         self._all_txs = _all_currency_transactions()
         seen = {tx.get("currency") for _schema, tx in self._all_txs if tx.get("currency")}
-        saved = set(settings.get_net_worth().keys())
-        self._currencies = sorted(seen | saved)
+        configured: set[str] = set()
+        for y in _currency_tracked_years():
+            schema = registry.get_schema_for_date(Date(y, 1, 1))
+            configured |= set(schema.get_currencies() or [])
+        self._currencies = sorted(seen | configured)
 
         has_tracking = bool(_currency_tracked_years())
         self._nw_empty_lbl.setVisible(not has_tracking)
@@ -217,7 +253,8 @@ class CurrenciesPage(QWidget):
             self._total_currency_combo.clear()
             return
 
-        self._rebuild_net_worth_grid()
+        self._extend_all_snapshots()
+        self._rebuild_net_worth_display()
         self._reload_combo(self._currency_combo)
         self._reload_combo(self._total_currency_combo)
         self._refresh_total()
@@ -232,72 +269,134 @@ class CurrenciesPage(QWidget):
             combo.setCurrentText(prev)
         combo.blockSignals(False)
 
-    # ── net worth grid ────────────────────────────────────────────────────
+    # ── historical rate sync (on demand) ──────────────────────────────────
 
-    def _rebuild_net_worth_grid(self) -> None:
+    def _on_refresh_rates_clicked(self) -> None:
+        if self._rate_sync is not None and self._rate_sync.isRunning():
+            return
+        self._refresh_rates_btn.setEnabled(False)
+        self._rate_sync_status.setText("Refreshing…")
+        self._rate_sync = RateSyncWorker(self)
+        self._rate_sync.sync_finished.connect(self._on_rate_sync_finished)
+        self._rate_sync.start()
+
+    def _on_rate_sync_finished(self, updated: int) -> None:
+        self._refresh_rates_btn.setEnabled(True)
+        self._rate_sync_status.setText(
+            f"Updated {updated} day(s) of rates." if updated else "No new rates found (offline, or already up to date)."
+        )
+        self.refresh()
+
+    # ── net worth: snapshots ────────────────────────────────────────────
+
+    def _active_snapshot(self) -> dict | None:
+        """The currently-active snapshot's full record, or None if there
+        isn't one — regardless of whether "Use snapshot" is ticked (that
+        check is the caller's job; this is just "which one is selected")."""
+        active_id = settings.get_active_net_worth_snapshot_id()
+        if active_id is None:
+            return None
+        for snap in settings.get_net_worth_snapshots():
+            if snap["id"] == active_id:
+                return snap
+        return None
+
+    def _applied_snapshot(self) -> dict | None:
+        """The snapshot whose numbers should actually be used right now —
+        None if "Use snapshot" is off, or nothing is active."""
+        if not settings.get_net_worth_snapshot_use_enabled():
+            return None
+        return self._active_snapshot()
+
+    def _extend_all_snapshots(self) -> None:
+        """Every stored snapshot (active or not) grows its monthly ledger
+        to cover through the current month, for as long as it exists —
+        see module docstring. Cheap: only computes months that aren't
+        already recorded."""
+        today = Date.today()
+        for snap in settings.get_net_worth_snapshots():
+            snapshot_date = Date.fromisoformat(snap["date"])
+            have = set(snap.get("monthly_history", {}).keys())
+            missing = [d for d in month_starts(snapshot_date, today) if d.isoformat() not in have]
+            if not missing:
+                continue
+            new_entries: dict = {}
+            for month_start in missing:
+                for currency, balance in snap["balances"].items():
+                    new_entries.setdefault(month_start.isoformat(), {})[currency] = balance_at(
+                        self._all_txs, currency, snapshot_date, balance, month_start
+                    )
+            settings.extend_net_worth_snapshot_history(snap["id"], new_entries)
+
+    def _rebuild_net_worth_display(self) -> None:
         while self._nw_grid.count():
             item = self._nw_grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        self._nw_rows = {}
+        self._opening_labels = {}
 
-        for col, h in enumerate(["Currency", "Cash", "Card", "Opening cash", "Opening card"]):
+        for col, h in enumerate(["Currency", "Opening cash", "Opening card"]):
             lbl = QLabel(h)
             lbl.setFont(QFont("Segoe UI", font_size("label"), QFont.Weight.Bold))
             lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
             self._nw_grid.addWidget(lbl, 0, col)
 
-        saved = settings.get_net_worth()
         for row, currency in enumerate(self._currencies, start=1):
-            entry = saved.get(currency, {})
             name_lbl = QLabel(currency)
             name_lbl.setStyleSheet(f"color:{c('t1')}; background:transparent; font-weight:bold;")
             self._nw_grid.addWidget(name_lbl, row, 0)
+            cash_lbl = QLabel("")
+            cash_lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
+            card_lbl = QLabel("")
+            card_lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
+            self._nw_grid.addWidget(cash_lbl, row, 1)
+            self._nw_grid.addWidget(card_lbl, row, 2)
+            self._opening_labels[currency] = (cash_lbl, card_lbl)
 
-            cash_field = QLineEdit(f"{entry.get('cash', 0.0) or 0.0:g}")
-            cash_field.setFixedWidth(90)
-            cash_field.setStyleSheet(input_style())
-            card_field = QLineEdit(f"{entry.get('card', 0.0) or 0.0:g}")
-            card_field.setFixedWidth(90)
-            card_field.setStyleSheet(input_style())
-            self._nw_grid.addWidget(cash_field, row, 1)
-            self._nw_grid.addWidget(card_field, row, 2)
+        self._refresh_opening_labels()
 
-            opening_cash_lbl = QLabel("")
-            opening_cash_lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-            opening_card_lbl = QLabel("")
-            opening_card_lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-            self._nw_grid.addWidget(opening_cash_lbl, row, 3)
-            self._nw_grid.addWidget(opening_card_lbl, row, 4)
+    def _refresh_opening_labels(self) -> None:
+        snapshot = self._applied_snapshot()
+        self._use_snapshot_check.blockSignals(True)
+        self._use_snapshot_check.setEnabled(self._active_snapshot() is not None)
+        self._use_snapshot_check.setChecked(settings.get_net_worth_snapshot_use_enabled())
+        self._use_snapshot_check.blockSignals(False)
 
-            self._nw_rows[currency] = (cash_field, card_field, opening_cash_lbl, opening_card_lbl)
-            cash_field.editingFinished.connect(lambda cur=currency: self._on_net_worth_edited(cur))
-            card_field.editingFinished.connect(lambda cur=currency: self._on_net_worth_edited(cur))
+        if self._active_snapshot() is None:
+            self._snapshot_status_lbl.setText("No snapshot yet — click \"Take snapshot\" to get started.")
+        elif snapshot is None:
+            active = self._active_snapshot()
+            self._snapshot_status_lbl.setText(
+                f"Active snapshot: {active['date']} — currently not applied (tick \"Use snapshot\")."
+            )
+        else:
+            self._snapshot_status_lbl.setText(f"Active snapshot: {snapshot['date']} (taken {snapshot['taken_at'][:16].replace('T', ' ')}).")
 
-            self._recompute_opening(currency)
+        for currency, (cash_lbl, card_lbl) in self._opening_labels.items():
+            opening = snapshot.get("opening", {}).get(currency) if snapshot is not None else None
+            if opening is None:
+                cash_lbl.setText("—")
+                card_lbl.setText("—")
+            else:
+                cash_lbl.setText(fmt_amount(opening["cash"], currency))
+                card_lbl.setText(fmt_amount(opening["card"], currency))
 
-    def _recompute_opening(self, currency: str) -> None:
-        cash_field, card_field, opening_cash_lbl, opening_card_lbl = self._nw_rows[currency]
-        cash_input = _parse_amount(cash_field.text())
-        card_input = _parse_amount(card_field.text())
+    def _on_take_snapshot_clicked(self) -> None:
+        dlg = TakeSnapshotDialog(self._currencies, self._all_txs, parent=self)
+        if dlg.exec():
+            self.refresh()
 
-        cash_moved = card_moved = 0.0
-        for schema, tx in self._all_txs:
-            if tx.get("currency") != currency:
-                continue
-            cd, kd = _native_cash_card_delta(schema, tx)
-            cash_moved += cd
-            card_moved += kd
+    def _on_manage_snapshots_clicked(self) -> None:
+        dlg = ManageSnapshotsDialog(parent=self)
+        dlg.exec()
+        self.refresh()
 
-        opening_cash_lbl.setText(fmt_amount(cash_input - cash_moved, currency))
-        opening_card_lbl.setText(fmt_amount(card_input - card_moved, currency))
-
-    def _on_net_worth_edited(self, currency: str) -> None:
-        cash_field, card_field, *_rest = self._nw_rows[currency]
-        settings.set_net_worth_entry(currency, _parse_amount(cash_field.text()), _parse_amount(card_field.text()))
-        self._recompute_opening(currency)
+    def _on_use_toggled(self, checked: bool) -> None:
+        settings.set_net_worth_snapshot_use_enabled(checked)
+        self._refresh_opening_labels()
         self._refresh_total()
+        self._refresh_currency_detail()
 
     # ── total right now ───────────────────────────────────────────────────
 
@@ -319,16 +418,19 @@ class CurrenciesPage(QWidget):
             self._total_lbl.setText("—")
             return
 
-        saved = settings.get_net_worth()
+        snapshot = self._applied_snapshot()
+        if snapshot is None:
+            self._total_lbl.setText("—")
+            return
+
         to_rate = rates.get(to_currency)
         if to_rate is None:
             self._total_lbl.setText("—")
             return
 
         total = 0.0
-        for currency in self._currencies:
-            entry = saved.get(currency, {})
-            amount = (entry.get("cash", 0.0) or 0.0) + (entry.get("card", 0.0) or 0.0)
+        for currency, amounts in snapshot.get("balances", {}).items():
+            amount = (amounts.get("cash", 0.0) or 0.0) + (amounts.get("card", 0.0) or 0.0)
             from_rate = rates.get(currency)
             if from_rate is None or amount == 0:
                 continue
@@ -341,25 +443,47 @@ class CurrenciesPage(QWidget):
         currency = self._currency_combo.currentText()
         filtered = [(schema, tx) for schema, tx in self._all_txs if tx.get("currency") == currency]
 
-        monthly: dict[tuple[int, int], float] = {}
-        for schema, tx in filtered:
-            date_val = tx.get("date")
-            if date_val is None:
-                continue
-            key = (date_val.year, date_val.month)
-            t = tx.get("type")
-            amt = tx.get("amount") or 0
-            if schema.is_income_type(t):
-                monthly[key] = monthly.get(key, 0.0) + amt
-            elif schema.is_expense_type(t):
-                monthly[key] = monthly.get(key, 0.0) - amt
+        snapshot = self._applied_snapshot()
+        history = snapshot.get("monthly_history", {}) if snapshot is not None else {}
+        currency_history = {month_iso: entry[currency] for month_iso, entry in history.items() if currency in entry}
 
-        points = []
-        running = 0.0
-        for i, key in enumerate(sorted(monthly)):
-            running += monthly[key]
-            points.append((f"{MONTH_NAMES[key[1] - 1][:3]} '{key[0] % 100:02d}", running, float(i)))
-        self._chart.update_data(points)
+        if currency_history:
+            points = []
+            for i, month_iso in enumerate(sorted(currency_history)):
+                bal = currency_history[month_iso]
+                month_date = Date.fromisoformat(month_iso)
+                label = f"{MONTH_NAMES[month_date.month - 1][:3]} '{month_date.year % 100:02d}"
+                points.append((label, bal["cash"] + bal["card"], float(i)))
+            self._chart.update_data(points)
+            self._chart_anchor_lbl.setText(
+                f"Real balance history, anchored to the {currency} snapshot taken {snapshot['date']}."
+            )
+        else:
+            # No applied snapshot (or this currency wasn't part of it) --
+            # fall back to a relative-to-zero running total, same as before
+            # snapshots existed at all.
+            monthly: dict[tuple[int, int], float] = {}
+            for schema, tx in filtered:
+                date_val = tx.get("date")
+                if date_val is None:
+                    continue
+                key = (date_val.year, date_val.month)
+                t = tx.get("type")
+                amt = tx.get("amount") or 0
+                if schema.is_income_type(t):
+                    monthly[key] = monthly.get(key, 0.0) + amt
+                elif schema.is_expense_type(t):
+                    monthly[key] = monthly.get(key, 0.0) - amt
+
+            points = []
+            running = 0.0
+            for i, key in enumerate(sorted(monthly)):
+                running += monthly[key]
+                points.append((f"{MONTH_NAMES[key[1] - 1][:3]} '{key[0] % 100:02d}", running, float(i)))
+            self._chart.update_data(points)
+            self._chart_anchor_lbl.setText(
+                "No snapshot applied — showing movement relative to zero, not a real balance."
+            )
 
         rows = sorted(filtered, key=_sort_key, reverse=True)
         self._table.setRowCount(len(rows))

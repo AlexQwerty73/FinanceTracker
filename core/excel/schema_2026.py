@@ -23,7 +23,9 @@ from . import workbook_io
 from ._formula import amount_value
 from ._match import amounts_close, same_date
 from ._rows import find_empty_row, find_next_open_row
-from .base import CategoryExistsError, MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema
+from .base import (
+    CategoryExistsError, CategoryInUseError, MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema,
+)
 
 DATA_START_ROW = 2
 MAX_DATA_ROW = 54  # binding constraint: SUMIF(B2:B54,...) totals
@@ -51,6 +53,28 @@ def _read_list_column(ws, col: int) -> list[str]:
         values.append(str(v))
         row += 1
     return values
+
+
+def _remove_list_row(ws, col: int, name: str) -> None:
+    """Shift every row after `name`'s row up by one — Lists columns are
+    packed, no-gap lists (_read_list_column reads until the first blank
+    cell), so removing an entry means closing the gap, not just blanking
+    it. Only touches `col` — Lists packs Categories/Types/Payment type
+    into independent columns on the same sheet, each its own length."""
+    row = 2
+    target_row = None
+    while ws.cell(row=row, column=col).value is not None:
+        if str(ws.cell(row=row, column=col).value) == name:
+            target_row = row
+            break
+        row += 1
+    if target_row is None:
+        return
+    r = target_row
+    while ws.cell(row=r + 1, column=col).value is not None:
+        ws.cell(row=r, column=col).value = ws.cell(row=r + 1, column=col).value
+        r += 1
+    ws.cell(row=r, column=col).value = None
 
 
 def _month_net_change_formula(row: int) -> str:
@@ -136,6 +160,67 @@ class Schema2026(YearSchema):
         workbook_io.save(wb, self.file_path)
         return count
 
+    def delete_category(self, name: str) -> None:
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_lists = wb[LISTS_SHEET]
+        if name not in _read_list_column(ws_lists, LISTS_CATEGORIES_COL):
+            raise ValueError(f'Category "{name}" does not exist.')
+
+        count = 0
+        for month_name in MONTH_NAMES:
+            ws = wb[month_name]
+            for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
+                if ws.cell(row=row, column=COL_CATEGORY).value == name:
+                    count += 1
+        if count > 0:
+            raise CategoryInUseError(
+                f'Category "{name}" is used by {count} transaction(s) — merge it into another category first.'
+            )
+
+        _remove_list_row(ws_lists, LISTS_CATEGORIES_COL, name)
+        workbook_io.save(wb, self.file_path)
+
+    def merge_category(self, source: str, target: str) -> int:
+        if source == target:
+            raise ValueError("Source and target categories must be different.")
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_lists = wb[LISTS_SHEET]
+        existing = _read_list_column(ws_lists, LISTS_CATEGORIES_COL)
+        if source not in existing:
+            raise ValueError(f'Category "{source}" does not exist.')
+        if target not in existing:
+            raise ValueError(f'Category "{target}" does not exist.')
+
+        count = 0
+        for month_name in MONTH_NAMES:
+            ws = wb[month_name]
+            for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
+                if ws.cell(row=row, column=COL_CATEGORY).value == source:
+                    ws.cell(row=row, column=COL_CATEGORY).value = target
+                    count += 1
+
+        ws_all = wb[ALLDATA_SHEET]
+        end = max(ws_all.max_row, DATA_START_ROW)
+        for row in range(DATA_START_ROW, end + 1):
+            if ws_all.cell(row=row, column=ALL_COL_CATEGORY).value == source:
+                ws_all.cell(row=row, column=ALL_COL_CATEGORY).value = target
+
+        _remove_list_row(ws_lists, LISTS_CATEGORIES_COL, source)
+        workbook_io.save(wb, self.file_path)
+        return count
+
+    def reorder_categories(self, new_order: list[str]) -> None:
+        if sorted(new_order) != sorted(self.get_categories()):
+            raise ValueError("New order must contain exactly the same categories.")
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_lists = wb[LISTS_SHEET]
+        for i, name in enumerate(new_order):
+            ws_lists.cell(row=2 + i, column=LISTS_CATEGORIES_COL).value = name
+        workbook_io.save(wb, self.file_path)
+
     # ── internal: operate on an already-open workbook, no load/save ────────
 
     def _write_transaction(
@@ -193,10 +278,10 @@ class Schema2026(YearSchema):
 
     def add_transaction(
         self, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str, currency: str | None = None,
+        payment_type: str | None, note: str, currency: str | None = None, rate: float | None = None,
     ) -> None:
-        # currency is unused here — 2026 has no multi-currency concept,
-        # kept only so callers can pass it uniformly across every schema.
+        # currency/rate are unused here — 2026 has no multi-currency concept,
+        # kept only so callers can pass them uniformly across every schema.
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)
         self._write_transaction(wb, date, type_, category, amount, payment_type, note)
@@ -204,7 +289,7 @@ class Schema2026(YearSchema):
 
     def update_transaction(
         self, tx: dict, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str, currency: str | None = None,
+        payment_type: str | None, note: str, currency: str | None = None, rate: float | None = None,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)

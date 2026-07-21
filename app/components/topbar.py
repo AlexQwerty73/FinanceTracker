@@ -156,7 +156,7 @@ class TopBar(QWidget):
         self._file_lbl = QLabel("")
         self._file_lbl.setFont(QFont("Segoe UI", font_size("micro")))
         self._file_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
-        self._file_lbl.setToolTip("The file currently active for this year — change it from ⚙ Manage files")
+        self._file_lbl.setToolTip("The file currently active for this year — change it from ⚙ Settings")
         lay.addWidget(self._file_lbl)
 
         self._next_btn = _nav_btn(">")

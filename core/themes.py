@@ -40,13 +40,6 @@ CATEGORICAL: list[str] = [
 ]
 CATEGORICAL_OTHER = "#7a7f99"  # muted gray, reserved for the "Other" bucket
 
-# Discrete (bucketed, not a smooth gradient) sequential scale for the
-# calendar heatmap — 5 steps: no activity, then 4 quartile levels rising
-# from muted gold to a hot orange-red, chosen for strong contrast between
-# adjacent buckets so activity actually pops out (a smooth gradient made
-# most cells look like near-indistinguishable shades of the same brown).
-HEATMAP_BUCKETS: list[str] = ["#22223a", "#7a5f10", "#c98500", "#f0a500", "#ff6a2b"]
-
 
 def c(key: str) -> str:
     return _PALETTE[key]

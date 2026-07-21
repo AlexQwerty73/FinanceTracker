@@ -30,8 +30,13 @@ ROLE_AMOUNT = "amount"
 ROLE_PAYMENT = "payment"
 ROLE_CURRENCY = "currency"
 ROLE_NOTES = "notes"
+ROLE_RATE = "rate"
+ROLE_BASE_AMOUNT = "base_amount"
 
-ALL_ROLES = [ROLE_DATE, ROLE_CATEGORY, ROLE_TYPE, ROLE_AMOUNT, ROLE_PAYMENT, ROLE_CURRENCY, ROLE_NOTES]
+ALL_ROLES = [
+    ROLE_DATE, ROLE_CATEGORY, ROLE_TYPE, ROLE_AMOUNT, ROLE_PAYMENT, ROLE_CURRENCY, ROLE_NOTES,
+    ROLE_RATE, ROLE_BASE_AMOUNT,
+]
 REQUIRED_ROLES = {ROLE_CATEGORY, ROLE_TYPE, ROLE_AMOUNT}
 OPTIONAL_ROLES = [r for r in ALL_ROLES if r not in REQUIRED_ROLES]
 
@@ -43,6 +48,8 @@ ROLE_LABELS = {
     ROLE_PAYMENT: "Payment type",
     ROLE_CURRENCY: "Currency",
     ROLE_NOTES: "Notes",
+    ROLE_RATE: "Rate",
+    ROLE_BASE_AMOUNT: "Amount (base currency)",
 }
 
 TEMPLATES_DIR = Path.home() / ".financetracker"
@@ -117,6 +124,8 @@ class Template:
                 raise TemplateValidationError("Pick a base currency for totals.")
             if self.base_currency not in self.currencies:
                 raise TemplateValidationError("Base currency must be one of the currencies listed.")
+        if (ROLE_RATE in self.columns or ROLE_BASE_AMOUNT in self.columns) and ROLE_CURRENCY not in self.columns:
+            raise TemplateValidationError("Rate / Amount (base currency) columns require the Currency column too.")
 
     def has_daily_dates(self) -> bool:
         return ROLE_DATE in self.columns

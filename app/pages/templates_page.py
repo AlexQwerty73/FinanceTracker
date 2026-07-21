@@ -3,7 +3,7 @@ app/pages/templates_page.py — TemplatesPage: build a custom workbook
 Template with a live, Excel-style table preview of the columns as you
 edit them — a full page (not a modal) so it's a comfortable place to
 experiment, reachable any time from the sidebar. Saved templates then show
-up in CreateFileDialog's layout picker.
+up in the Settings dialog's "Create New File" tab's layout picker.
 
 Interaction design is deliberately "direct manipulation" rather than
 select-then-click-a-button: columns are added by clicking a "+ Date" style

@@ -16,6 +16,7 @@ so this module can stay a plain, low-level JSON store.
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 SETTINGS_DIR = Path.home() / ".financetracker"
@@ -154,16 +155,108 @@ def set_default_folder(path: Path) -> None:
     save(data)
 
 
-def get_net_worth() -> dict:
-    """{"CZK": {"cash": float, "card": float}, ...} — the user's own "how
-    much do I actually have right now" snapshot, entered on the
-    Currencies page. Not year-scoped: continuous across however many
-    years happen to have currency tracking, used to back-calculate the
-    opening balance before the first recorded transaction."""
-    return load().get("net_worth", {})
+def _snapshots_root(data: dict) -> dict:
+    """The {"list", "active_id", "use_enabled"} structure — replaces (not
+    migrates) an older per-currency net_worth_snapshots shape from an
+    earlier round this session, which isn't compatible with the history-
+    of-snapshots model and was never relied on with real data."""
+    root = data.get("net_worth_snapshots")
+    if not isinstance(root, dict) or "list" not in root:
+        root = {"list": [], "active_id": None, "use_enabled": True}
+        data["net_worth_snapshots"] = root
+    return root
 
 
-def set_net_worth_entry(currency: str, cash: float, card: float) -> None:
+def get_net_worth_snapshots() -> list[dict]:
+    """[{"id", "date": "YYYY-MM-DD", "taken_at": iso datetime,
+    "balances": {cur: {"cash","card"}},   # exactly what was typed into the form
+    "opening": {cur: {"cash","card"}},    # balance before the very first transaction
+    "monthly_history": {"YYYY-MM-01": {cur: {"cash","card"}}, ...}},
+    ...] — every snapshot ever taken (Currencies page's "Take snapshot"
+    form), newest first. `monthly_history` is permanent once a given
+    month's entry is written (never recomputed or overwritten — same rule
+    core/rate_history.py already follows for cached rates) but keeps
+    growing forward every time the Currencies page runs its catch-up
+    pass, for as long as this snapshot exists (whether it's the active
+    one or not)."""
+    return sorted(_snapshots_root(load())["list"], key=lambda s: s["taken_at"], reverse=True)
+
+
+def add_net_worth_snapshot(date_iso: str, taken_at_iso: str, balances: dict, opening: dict, monthly_history: dict) -> str:
+    """Stores a new snapshot and makes it the active one. Returns its id."""
+    snapshot_id = uuid.uuid4().hex
     data = load()
-    data.setdefault("net_worth", {})[currency] = {"cash": cash, "card": card}
+    root = _snapshots_root(data)
+    root["list"].append({
+        "id": snapshot_id, "date": date_iso, "taken_at": taken_at_iso,
+        "balances": balances, "opening": opening, "monthly_history": monthly_history,
+    })
+    root["active_id"] = snapshot_id
+    save(data)
+    return snapshot_id
+
+
+def delete_net_worth_snapshot(snapshot_id: str) -> None:
+    data = load()
+    root = _snapshots_root(data)
+    root["list"] = [s for s in root["list"] if s["id"] != snapshot_id]
+    if root["active_id"] == snapshot_id:
+        root["active_id"] = None
+    save(data)
+
+
+def extend_net_worth_snapshot_history(snapshot_id: str, new_entries: dict) -> None:
+    """Merges `new_entries` ({"YYYY-MM-01": {cur: {...}}, ...}) into a
+    snapshot's monthly_history -- only adds keys that aren't already
+    there, never overwrites an existing (frozen) month."""
+    data = load()
+    root = _snapshots_root(data)
+    for snap in root["list"]:
+        if snap["id"] == snapshot_id:
+            history = snap.setdefault("monthly_history", {})
+            for key, value in new_entries.items():
+                history.setdefault(key, value)
+            save(data)
+            return
+
+
+def get_active_net_worth_snapshot_id() -> str | None:
+    return _snapshots_root(load())["active_id"]
+
+
+def set_active_net_worth_snapshot_id(snapshot_id: str | None) -> None:
+    data = load()
+    _snapshots_root(data)["active_id"] = snapshot_id
+    save(data)
+
+
+def get_net_worth_snapshot_use_enabled() -> bool:
+    """The one page-wide "use snapshot in calculations" switch — separate
+    from *which* snapshot is active, so the user can flip calculations
+    off without losing track of which snapshot they'd go back to."""
+    return _snapshots_root(load())["use_enabled"]
+
+
+def set_net_worth_snapshot_use_enabled(enabled: bool) -> None:
+    data = load()
+    _snapshots_root(data)["use_enabled"] = enabled
+    save(data)
+
+
+def get_ignored_review_items() -> list[str]:
+    """Signatures (core/duplicates.py's DuplicateGroup.signature /
+    Outlier.signature) the user has dismissed as "not actually a problem"
+    on the Review page — excluded from future detection runs. One shared
+    list for both duplicates and outliers (signatures are prefixed
+    "dup|"/"outlier|", so they never collide)."""
+    return list(load().get("ignored_review_items", []))
+
+
+def set_review_item_ignored(signature: str, ignored: bool) -> None:
+    data = load()
+    ignored_list = data.setdefault("ignored_review_items", [])
+    if ignored and signature not in ignored_list:
+        ignored_list.append(signature)
+    elif not ignored and signature in ignored_list:
+        ignored_list.remove(signature)
     save(data)

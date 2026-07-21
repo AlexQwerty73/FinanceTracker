@@ -155,7 +155,7 @@ class DashboardPage(QWidget):
         income_breakdown: dict[str, float] = {}
         for tx in txs:
             cat = tx.get("category") or "Other"
-            amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
+            amt = schema.convert_transaction(tx)
             if schema.is_expense_type(tx.get("type")):
                 expense_breakdown[cat] = expense_breakdown.get(cat, 0.0) + amt
             elif schema.is_income_type(tx.get("type")):
@@ -184,7 +184,7 @@ class DashboardPage(QWidget):
             d = tx.get("date")
             if d is None:
                 continue
-            amt = schema.to_base_amount(tx.get("amount") or 0, tx.get("currency"))
+            amt = schema.convert_transaction(tx)
             if schema.is_income_type(tx.get("type")):
                 daily_delta[d.day] = daily_delta.get(d.day, 0.0) + amt
             elif schema.is_expense_type(tx.get("type")):

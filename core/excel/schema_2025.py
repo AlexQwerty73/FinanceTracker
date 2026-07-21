@@ -35,7 +35,9 @@ from datetime import date as Date
 from . import workbook_io
 from ._formula import amount_value
 from ._rows import find_empty_row
-from .base import CategoryExistsError, MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema
+from .base import (
+    CategoryExistsError, CategoryInUseError, MONTH_NAMES, SheetFullError, TransactionNotFoundError, YearSchema,
+)
 
 DATA_START_ROW = 4
 MAX_DATA_ROW = 103  # binding constraint: SUMIF($B$4:$B$103,...) totals
@@ -126,6 +128,96 @@ class Schema2025(YearSchema):
         workbook_io.save(wb, self.file_path)
         return count
 
+    def delete_category(self, name: str) -> None:
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_cat = wb[CATEGORIES_SHEET]
+
+        row = 1
+        found = False
+        while ws_cat.cell(row=row, column=1).value is not None:
+            if str(ws_cat.cell(row=row, column=1).value).strip() == name:
+                found = True
+            row += 1
+        if not found:
+            raise ValueError(f'Category "{name}" does not exist.')
+
+        count = 0
+        for month_name in MONTH_NAMES:
+            ws = wb[month_name]
+            for r in range(DATA_START_ROW, MAX_DATA_ROW + 1):
+                if ws.cell(row=r, column=COL_CATEGORY).value == name:
+                    count += 1
+        if count > 0:
+            raise CategoryInUseError(
+                f'Category "{name}" is used by {count} transaction(s) — merge it into another category first.'
+            )
+
+        self._remove_category_row(ws_cat, name)
+        workbook_io.save(wb, self.file_path)
+
+    def merge_category(self, source: str, target: str) -> int:
+        if source == target:
+            raise ValueError("Source and target categories must be different.")
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_cat = wb[CATEGORIES_SHEET]
+
+        row = 1
+        have_source = have_target = False
+        while ws_cat.cell(row=row, column=1).value is not None:
+            v = str(ws_cat.cell(row=row, column=1).value).strip()
+            have_source |= v == source
+            have_target |= v == target
+            row += 1
+        if not have_source:
+            raise ValueError(f'Category "{source}" does not exist.')
+        if not have_target:
+            raise ValueError(f'Category "{target}" does not exist.')
+
+        count = 0
+        for month_name in MONTH_NAMES:
+            ws = wb[month_name]
+            for r in range(DATA_START_ROW, MAX_DATA_ROW + 1):
+                if ws.cell(row=r, column=COL_CATEGORY).value == source:
+                    ws.cell(row=r, column=COL_CATEGORY).value = target
+                    count += 1
+
+        self._remove_category_row(ws_cat, source)
+        workbook_io.save(wb, self.file_path)
+        return count
+
+    def reorder_categories(self, new_order: list[str]) -> None:
+        if sorted(new_order) != sorted(self.get_categories()):
+            raise ValueError("New order must contain exactly the same categories.")
+        wb = workbook_io.load(self.file_path, data_only=False)
+        workbook_io.invalidate(self.file_path)
+        ws_cat = wb[CATEGORIES_SHEET]
+        for i, name in enumerate(new_order):
+            ws_cat.cell(row=1 + i, column=1).value = name
+        workbook_io.save(wb, self.file_path)
+
+    @staticmethod
+    def _remove_category_row(ws_cat, name: str) -> None:
+        """Shift every row after `name`'s row up by one — the Categories
+        sheet is a packed, no-gap list (get_categories() reads until the
+        first blank cell), so removing a row means closing the gap, not
+        just blanking it."""
+        row = 1
+        target_row = None
+        while ws_cat.cell(row=row, column=1).value is not None:
+            if str(ws_cat.cell(row=row, column=1).value).strip() == name:
+                target_row = row
+                break
+            row += 1
+        if target_row is None:
+            return
+        r = target_row
+        while ws_cat.cell(row=r + 1, column=1).value is not None:
+            ws_cat.cell(row=r, column=1).value = ws_cat.cell(row=r + 1, column=1).value
+            r += 1
+        ws_cat.cell(row=r, column=1).value = None
+
     # ── internal: operate on an already-open workbook, no load/save ────────
 
     def _ensure_payment_header(self, ws) -> None:
@@ -170,10 +262,10 @@ class Schema2025(YearSchema):
 
     def add_transaction(
         self, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str, currency: str | None = None,
+        payment_type: str | None, note: str, currency: str | None = None, rate: float | None = None,
     ) -> None:
-        # currency is unused here — 2025 has no multi-currency concept,
-        # kept only so callers can pass it uniformly across every schema.
+        # currency/rate are unused here — 2025 has no multi-currency concept,
+        # kept only so callers can pass them uniformly across every schema.
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)
         self._write_transaction(wb, date, type_, category, amount, payment_type, note)
@@ -181,7 +273,7 @@ class Schema2025(YearSchema):
 
     def update_transaction(
         self, tx: dict, date: Date, type_: str, category: str, amount: float,
-        payment_type: str | None, note: str, currency: str | None = None,
+        payment_type: str | None, note: str, currency: str | None = None, rate: float | None = None,
     ) -> None:
         wb = workbook_io.load(self.file_path, data_only=False)
         workbook_io.invalidate(self.file_path)

@@ -1,10 +1,13 @@
 """
-app/components/manage_files_dialog.py — ManageFilesDialog: see where every
+app/components/manage_files_dialog.py — FilesManagerWidget: see where every
 registered year's file currently lives, and move one to a different folder
 without touching Explorer — core.file_ops.move_year_file() handles the
 physical move and keeps settings.json/config.FILE_PATHS in sync. Also lets
 you change the default folder new files get suggested into
-(create_file_dialog.py).
+(create_file_dialog.py). Lives as one tab inside SettingsDialog
+(app/components/settings_dialog.py) — a plain QWidget, not its own
+top-level dialog; the outer Settings dialog owns the one Close button for
+the whole thing.
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from core import config, file_ops, settings
 from core.excel import registry
@@ -20,26 +23,18 @@ from core.themes import FIELD_HEIGHT, c, font_size
 
 from .file_selection_dialog import FileSelectionDialog
 from .transaction_fields import field_label, input_style
-from .widgets import primary_button, secondary_button
+from .widgets import secondary_button
 
 
-class ManageFilesDialog(QDialog):
+class FilesManagerWidget(QWidget):
     files_changed = pyqtSignal()  # emitted after any successful move / default-folder change
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Manage Files")
-        self.setFixedWidth(540)
-        self.setStyleSheet(f"QDialog {{ background:{c('bg')}; }}")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(10)
-
-        hdr = QLabel("Manage Files")
-        hdr.setFont(QFont("Segoe UI", font_size("dialog"), QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
-        lay.addWidget(hdr)
 
         desc = QLabel("See where each year's file lives, and move one to a different folder without doing it in Explorer.")
         desc.setWordWrap(True)
@@ -74,18 +69,15 @@ class ManageFilesDialog(QDialog):
         self._status.setWordWrap(True)
         self._status.setFont(QFont("Segoe UI", font_size("label")))
         lay.addWidget(self._status)
+        lay.addStretch()
 
-        close_btn = primary_button("Close")
-        close_btn.clicked.connect(self.accept)
-        lay.addWidget(close_btn)
-
-        self._refresh_rows()
+        self.refresh_rows()
 
     def _set_status(self, text: str, error: bool = True) -> None:
         self._status.setStyleSheet(f"color:{c('err_c') if error else c('income_c')}; background:transparent;")
         self._status.setText(text)
 
-    def _refresh_rows(self) -> None:
+    def refresh_rows(self) -> None:
         for w in self._row_widgets:
             self._rows_lay.removeWidget(w)
             w.deleteLater()
@@ -121,7 +113,7 @@ class ManageFilesDialog(QDialog):
         dlg.exec()
 
     def _on_files_changed_internal(self) -> None:
-        self._refresh_rows()
+        self.refresh_rows()
         self.files_changed.emit()
 
     def _on_change_default_folder(self) -> None:
@@ -152,5 +144,5 @@ class ManageFilesDialog(QDialog):
             return
 
         self._set_status(f"Moved {current.name} to {folder}.", error=False)
-        self._refresh_rows()
+        self.refresh_rows()
         self.files_changed.emit()

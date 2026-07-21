@@ -15,7 +15,7 @@ from __future__ import annotations
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
-from . import schema_dynamic, workbook_io
+from . import derived_sheets, schema_dynamic, styling, workbook_io
 from .base import MONTH_NAMES
 from .template_model import ROLE_LABELS, Template
 from .schema_2025 import (
@@ -170,11 +170,14 @@ def create_custom_workbook(path, year: int, template: Template) -> None:
     Payment options."""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
+    col_map = {role: i + 1 for i, role in enumerate(template.columns)}
 
     for month_name in MONTH_NAMES:
         ws = wb.create_sheet(month_name)
         for col, role in enumerate(template.columns, start=1):
             ws.cell(row=1, column=col).value = ROLE_LABELS[role]
+        styling.style_transaction_sheet(ws, col_map)
+        styling.add_effective_amount_column(ws, col_map)
 
     ws_lists = wb.create_sheet(schema_dynamic.LISTS_SHEET)
     ws_lists.cell(row=1, column=schema_dynamic.LISTS_CATEGORIES_COL).value = "Categories"
@@ -199,4 +202,8 @@ def create_custom_workbook(path, year: int, template: Template) -> None:
         # fills in real rates directly in Excel; DynamicSchema.to_base_amount()
         # treats a missing rate as "don't convert" rather than crashing.
 
+    for month_name in MONTH_NAMES:
+        styling.add_dropdowns(wb[month_name], col_map)
+
+    derived_sheets.create_sheets(wb, template, year)
     workbook_io.save(wb, path)
