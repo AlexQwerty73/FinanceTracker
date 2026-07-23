@@ -3,8 +3,11 @@ core/duplicates.py — pure detection of likely accidental double-entries
 and outlier amounts, across every registered year. No PyQt import.
 
 "Duplicate" = two or more transactions in the same year sharing the same
-date + type + category + amount: the classic "entered the same purchase
-twice" mistake. Years without real per-transaction dates (e.g. 2025 —
+date + type + category + currency + amount: the classic "entered the
+same purchase twice" mistake. Currency is part of the key so e.g. a
+100 USD and a 100 UAH transaction on the same day/category are never
+flagged as duplicates of each other just because their native amounts
+happen to match. Years without real per-transaction dates (e.g. 2025 —
 see YearSchema.HAS_DAILY_DATES) are skipped entirely, same as
 core/subscriptions.py's own detection: without a real date, "same month,
 same category, same amount" is far too loose (two separate, legitimate
@@ -12,7 +15,9 @@ purchases sharing a common round amount in the same category are
 routine) and produced a flood of false positives when first tried
 against real data.
 
-"Outlier" = an expense whose amount sits more than
+"Outlier" = an expense whose amount (converted to the year's base
+currency, so a multi-currency category's stats aren't skewed by treating
+e.g. 100 UAH and 100 CZK as the same magnitude) sits more than
 OUTLIER_STDEV_MULTIPLIER standard deviations above its own category's
 mean (only evaluated for categories with enough history to know what
 "normal" looks like) — worth a second look, not necessarily wrong.
@@ -50,8 +55,8 @@ class Outlier:
     schema: YearSchema
     category: str
     tx: dict
-    category_mean: float
-    category_stdev: float
+    category_mean: float  # base currency (see detect_outliers) — not necessarily tx's own native currency
+    category_stdev: float  # base currency, same reasoning
 
 
 def detect_duplicates(ignored_signatures: set[str] | None = None) -> list[DuplicateGroup]:
@@ -72,13 +77,13 @@ def detect_duplicates(ignored_signatures: set[str] | None = None) -> list[Duplic
                 if date_val is None:
                     continue
                 d = date_val.date() if hasattr(date_val, "date") else date_val
-                key = (d, tx.get("type"), tx.get("category"), round(tx.get("amount") or 0.0, 2))
+                key = (d, tx.get("type"), tx.get("category"), tx.get("currency"), round(tx.get("amount") or 0.0, 2))
                 by_key.setdefault(key, []).append(tx)
 
-        for (d, type_, category, amount), txs in by_key.items():
+        for (d, type_, category, currency, amount), txs in by_key.items():
             if len(txs) < 2:
                 continue
-            signature = f"dup|{year}|{d.isoformat()}|{type_}|{category}|{amount}"
+            signature = f"dup|{year}|{d.isoformat()}|{type_}|{category}|{currency}|{amount}"
             if signature in ignored_signatures:
                 continue
             groups.append(DuplicateGroup(
@@ -109,7 +114,7 @@ def detect_outliers(ignored_signatures: set[str] | None = None) -> list[Outlier]
         for category, txs in by_category.items():
             if len(txs) < OUTLIER_MIN_CATEGORY_SAMPLES:
                 continue
-            amounts = [tx.get("amount") or 0.0 for tx in txs]
+            amounts = [schema.convert_transaction(tx) for tx in txs]
             avg = mean(amounts)
             spread = pstdev(amounts)
             if spread == 0:
@@ -118,7 +123,11 @@ def detect_outliers(ignored_signatures: set[str] | None = None) -> list[Outlier]
             for tx, amount in zip(txs, amounts):
                 if amount <= threshold:
                     continue
-                signature = f"outlier|{year}|{tx.get('month')}|{tx.get('_row')}"
+                # Amount in the signature too -- a deleted transaction blanks
+                # its row, and a later add can reuse that same row number;
+                # without the amount, an old ignore would silently carry
+                # over to whatever unrelated new transaction lands there.
+                signature = f"outlier|{year}|{tx.get('month')}|{tx.get('_row')}|{round(tx.get('amount') or 0.0, 2)}"
                 if signature in ignored_signatures:
                     continue
                 outliers.append(Outlier(

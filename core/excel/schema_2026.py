@@ -342,7 +342,8 @@ class Schema2026(YearSchema):
 
     def transactions_for_month(self, month: int) -> list[dict]:
         wb = workbook_io.load(self.file_path, data_only=False)
-        ws = wb[MONTH_NAMES[month - 1]]
+        month_name = MONTH_NAMES[month - 1]
+        ws = wb[month_name]
 
         result = []
         for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
@@ -351,6 +352,7 @@ class Schema2026(YearSchema):
                 continue
             result.append({
                 "_row": row,
+                "month": month_name,
                 "date": d,
                 "type": ws.cell(row=row, column=COL_TYPE).value,
                 "category": ws.cell(row=row, column=COL_CATEGORY).value,

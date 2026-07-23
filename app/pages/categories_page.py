@@ -149,12 +149,21 @@ class CategoriesPage(QWidget):
         registry.supported_years() can grow at runtime and this combo was
         only populated once at init."""
         current = self._year_combo.currentText()
+        years = registry.supported_years()
         self._year_combo.blockSignals(True)
         self._year_combo.clear()
-        self._year_combo.addItems([str(y) for y in registry.supported_years()])
-        if self._year_combo.findText(current) >= 0:
+        self._year_combo.addItems([str(y) for y in years])
+        found = self._year_combo.findText(current) >= 0
+        if found:
             self._year_combo.setCurrentText(current)
         self._year_combo.blockSignals(False)
+        if not found and years:
+            # The previously-selected year was just unregistered (e.g. its
+            # only candidate file got unchecked) -- the combo silently fell
+            # back to its first item while self._year still held the dead
+            # year, so the next refresh() would show a stale "no template
+            # registered" error until the user manually re-picked a year.
+            self.refresh(years[0])
 
     def _on_year_changed(self, text: str) -> None:
         if text:

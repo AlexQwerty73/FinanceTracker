@@ -1,6 +1,6 @@
 """
 app/window.py — App: sidebar + page stack (Home, Analytics, Categories,
-Templates, Currencies, Review). Watches the Finances directory and
+Currencies, Review, Settings). Watches the Finances directory and
 refreshes the active page ~2s after any external change settles
 (debounced).
 
@@ -8,12 +8,12 @@ Home (app/pages/home_page.py) combines what used to be two separate
 top-level pages (Dashboard + Transactions) plus the month/year TopBar —
 that trio always shares the same viewed month, so they're one page now,
 not three things window.py has to keep in sync. Analytics, Categories,
-Currencies, and Review are all independent of "the viewed month" entirely
-(Categories/Currencies have their own year-scoping, Analytics always
-anchors at today) — each refreshes lazily, only when it becomes the
-active page. Templates is parked behind a WipPlaceholder pending a
-redesign (see CLAUDE.md's Recent changes) — the real `TemplatesPage`
-implementation is untouched, just not wired up right now.
+Currencies, Review, and Settings are all independent of "the viewed
+month" entirely (Categories/Currencies have their own year-scoping,
+Analytics always anchors at today) — each refreshes lazily, only when it
+becomes the active page. Settings (app/pages/settings_page.py) is a full
+page like the rest, not a popup dialog — it also hosts Templates as one
+of its tabs (no separate sidebar destination for Templates anymore).
 """
 from __future__ import annotations
 
@@ -29,14 +29,13 @@ from core.themes import c
 from core.watcher import FileWatcher
 
 from .components.rate_sync_worker import RateSyncWorker
-from .components.settings_dialog import SettingsDialog
 from .components.widgets import nav_chip_style
-from .components.wip_placeholder import WipPlaceholder
 from .pages.analytics_page import AnalyticsPage
 from .pages.categories_page import CategoriesPage
 from .pages.currencies_page import CurrenciesPage
 from .pages.home_page import HomePage
 from .pages.review_page import ReviewPage
+from .pages.settings_page import SettingsPage
 
 _ICON_SIZE = QSize(22, 22)
 
@@ -45,9 +44,9 @@ _DEBOUNCE_MS = 2000
 PG_HOME = 0
 PG_ANALYTICS = 1
 PG_CATEGORIES = 2
-PG_TEMPLATES = 3
-PG_CURRENCIES = 4
-PG_REVIEW = 5
+PG_CURRENCIES = 3
+PG_REVIEW = 4
+PG_SETTINGS = 5
 
 
 class App(QWidget):
@@ -61,18 +60,20 @@ class App(QWidget):
         self._home_page = HomePage()
         self._analytics_page = AnalyticsPage()
         self._categories_page = CategoriesPage()
-        self._templates_page = WipPlaceholder("Templates")  # real TemplatesPage parked pending a redesign
         self._currencies_page = CurrenciesPage()
         self._review_page = ReviewPage()
+        self._settings_page = SettingsPage()
+        self._settings_page.file_created.connect(self._on_file_created)
+        self._settings_page.files_changed.connect(self._on_files_changed)
         self._home_page.analytics_clicked.connect(lambda: self._show_page(PG_ANALYTICS))
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._home_page)        # PG_HOME
         self._stack.addWidget(self._analytics_page)    # PG_ANALYTICS
         self._stack.addWidget(self._categories_page)   # PG_CATEGORIES
-        self._stack.addWidget(self._templates_page)    # PG_TEMPLATES
         self._stack.addWidget(self._currencies_page)   # PG_CURRENCIES
         self._stack.addWidget(self._review_page)        # PG_REVIEW
+        self._stack.addWidget(self._settings_page)      # PG_SETTINGS
 
         root_lay = QHBoxLayout(self)
         root_lay.setContentsMargins(0, 0, 0, 0)
@@ -116,7 +117,6 @@ class App(QWidget):
             ("dashboard", "Dashboard", PG_HOME),
             ("analytics", "Analytics", PG_ANALYTICS),
             ("categories", "Categories", PG_CATEGORIES),
-            ("templates", "Templates (in development)", PG_TEMPLATES),
             ("currencies", "Currencies", PG_CURRENCIES),
             ("review", "Review — duplicates & outliers", PG_REVIEW),
         ]:
@@ -133,12 +133,11 @@ class App(QWidget):
 
         settings_btn = QPushButton()
         settings_btn.setFixedSize(48, 44)
-        settings_btn.setIcon(icon("settings", c("t2")))
         settings_btn.setIconSize(_ICON_SIZE)
-        settings_btn.setToolTip("Settings — files, create a new finances file")
+        settings_btn.setToolTip("Settings — files, create a new finances file, templates")
         settings_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        settings_btn.setStyleSheet(nav_chip_style(False, ghost=True, radius_key="lg"))
-        settings_btn.clicked.connect(self._on_settings)
+        settings_btn.clicked.connect(lambda: self._show_page(PG_SETTINGS))
+        self._nav_btns.append((settings_btn, PG_SETTINGS, "settings"))
         lay.addWidget(settings_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._style_nav_buttons()
@@ -184,14 +183,8 @@ class App(QWidget):
             self._currencies_page.refresh()
         elif idx == PG_REVIEW:
             self._review_page.refresh()
-        # PG_TEMPLATES is a WIP placeholder — nothing to refresh.
-
-    def _on_settings(self) -> None:
-        dlg = SettingsDialog(parent=self)
-        dlg.file_created.connect(self._on_file_created)
-        dlg.manage_templates_requested.connect(lambda: self._show_page(PG_TEMPLATES))
-        dlg.files_changed.connect(self._on_files_changed)
-        dlg.exec()
+        elif idx == PG_SETTINGS:
+            self._settings_page.refresh()
 
     def _on_file_created(self, year: int) -> None:
         self._watcher.rewatch()  # start watching the new file's folder too

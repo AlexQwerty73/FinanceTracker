@@ -13,6 +13,12 @@ from pathlib import Path
 from . import config, settings
 from .excel import registry, workbook_io
 
+# OneDrive's own naming for a sync conflict it couldn't resolve silently —
+# it never overwrites either side, it just drops an extra file next to the
+# original. Two conventions seen in practice: "name-DEVICENAME.xlsx" (the
+# device name itself can contain dashes, e.g. "DESKTOP-ABC123") and
+# "name (device's conflicted copy YYYY-MM-DD).xlsx".
+
 
 def move_year_file(year: int, new_path: Path) -> None:
     """Physically move the file registered for `year` to `new_path`
@@ -56,6 +62,20 @@ def discover_candidate_files(folder: Path) -> list[Path]:
     FileSelectionDialog cross-references each against the currently
     registered candidates (across all years) to decide checked/unchecked."""
     return sorted(Path(folder).glob("*.xlsx"))
+
+
+def detect_conflict_copy(path: Path, known_stems: set[str]) -> bool:
+    """Whether `path` looks like a OneDrive sync-conflict copy of one of
+    the *already-known* registered files (`known_stems` — every registered
+    candidate's own filename stem, across every year), rather than a
+    genuinely unrelated or new file. Prefix-matched (not an exact "one
+    dash, one segment" pattern) since a device name can itself contain
+    dashes (e.g. "DESKTOP-ABC123") -- a file dropped in the Finances
+    folder that just happens to start with an unrelated dash-containing
+    name is still only flagged if that exact prefix is one of the
+    already-known files, not any dash-containing filename."""
+    stem = path.stem
+    return any(stem.startswith(known + "-") or stem.startswith(known + " ") for known in known_stems)
 
 
 def known_candidate_years() -> dict[Path, int]:

@@ -206,9 +206,9 @@ class CategoryPieChart(_HoverCanvas):
                 colors.append(CATEGORICAL[i % len(CATEGORICAL)])
 
         wedges, _texts, autotexts = ax.pie(
-            values, colors=colors, autopct="%1.0f%%", pctdistance=0.72,
+            values, colors=colors, autopct="%1.0f%%", pctdistance=0.78,
             startangle=90, counterclock=False,
-            wedgeprops={"linewidth": 2, "edgecolor": c("chart_bg")},
+            wedgeprops={"linewidth": 2, "edgecolor": c("chart_bg"), "width": 0.42},
             textprops={"fontsize": 8, "fontfamily": _FONT},
         )
         self._wedges = wedges

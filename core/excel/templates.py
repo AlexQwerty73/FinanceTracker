@@ -165,9 +165,11 @@ def create_2026_style_workbook(path, year: int) -> None:
 def create_custom_workbook(path, year: int, template: Template) -> None:
     """A blank workbook matching a user-defined Template: header row 1
     built from template.columns (whichever roles/order it chose), no data
-    rows, no native Excel formulas (the app computes everything itself —
-    see schema_dynamic.py), plus a Lists sheet for Categories/Types/
-    Payment options."""
+    rows, plus a Lists sheet for Categories/Types/Payment options. Month
+    sheets get a hidden effective-amount helper column (see
+    styling.add_effective_amount_column()) and dropdown validation;
+    derived_sheets.create_sheets() adds the four formula-driven summary
+    sheets (Monthly/Annual Summary, By Category, All Transactions)."""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     col_map = {role: i + 1 for i, role in enumerate(template.columns)}

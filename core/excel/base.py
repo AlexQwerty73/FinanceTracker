@@ -132,13 +132,14 @@ class YearSchema(ABC):
         only currency in use, unchanged."""
         return amount
 
-    def refresh_converted_amounts(self, currency: str, date: Date, rate: float) -> int:
+    def refresh_converted_amounts(self, currency: str, date: Date, rate: float, rows: set[int] | None = None) -> int:
         """Rewrite the Rate/Amount (base currency) columns (if this
         schema's template has them) for every transaction on `date` in
         `currency`, using `rate` — called after a background rate sync
         fetches an improved rate for that exact (currency, date) pair.
-        Default: no such columns exist, nothing to rewrite. Returns the
-        number of rows updated."""
+        `rows` — see DynamicSchema's implementation (scopes the update to
+        specific row numbers). Default: no such columns exist, nothing to
+        rewrite. Returns the number of rows updated."""
         return 0
 
     def resolve_rate(self, currency: str | None, date: Date | None) -> float | None:

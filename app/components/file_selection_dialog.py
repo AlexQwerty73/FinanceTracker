@@ -86,11 +86,29 @@ class FileSelectionDialog(QDialog):
 
         by_path = file_ops.known_candidate_years()
         active_paths = set(settings.get_file_paths().values())
+        known_stems = {p.stem for p in by_path}
         for path in file_ops.discover_candidate_files(config.FINANCES_DIR):
             year = by_path.get(path)
-            row = self._build_row(path, year, active=path in active_paths)
+            if year is None and file_ops.detect_conflict_copy(path, known_stems):
+                row = self._build_conflict_row(path)
+            else:
+                row = self._build_row(path, year, active=path in active_paths)
             self._rows_lay.addWidget(row)
             self._row_widgets.append(row)
+
+    def _build_conflict_row(self, path: Path) -> QWidget:
+        """A likely OneDrive sync-conflict copy of an already-tracked file
+        -- shown as a plain warning, not a checkbox, so it can't be
+        accidentally checked in as if it were a normal candidate (see
+        core/file_ops.py::detect_conflict_copy())."""
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        warn = QLabel(f"⚠ {path.name} — looks like a OneDrive sync-conflict copy, not tracked")
+        warn.setStyleSheet(f"color:{c('err_c')}; background:transparent;")
+        lay.addWidget(warn, 1)
+        return row
 
     def _build_row(self, path: Path, year: int | None, active: bool) -> QWidget:
         row = QWidget()

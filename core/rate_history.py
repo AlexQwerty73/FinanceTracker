@@ -24,20 +24,37 @@ from pathlib import Path
 RATE_HISTORY_DIR = Path.home() / ".financetracker"
 RATE_HISTORY_PATH = RATE_HISTORY_DIR / "rate_history.json"
 
+_cache: dict | None = None  # populated on first load(); nothing else ever writes this file
+
 
 def load() -> dict:
-    """{"USD": {"2026-03-15": 22.9, ...}, "EUR": {...}, ...}"""
-    if not RATE_HISTORY_PATH.exists():
-        return {}
-    try:
-        return json.loads(RATE_HISTORY_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    """{"USD": {"2026-03-15": 22.9, ...}, "EUR": {...}, ...} — cached in
+    memory after the first read, since get_rate() is called once per
+    foreign-currency row by month_summary()/convert_transaction(), and
+    re-parsing the whole (only-ever-growing) file from disk every single
+    time was real, avoidable overhead on every page refresh. Nothing but
+    save() (below) ever writes this file, so the cache can't go stale."""
+    global _cache
+    if _cache is None:
+        if not RATE_HISTORY_PATH.exists():
+            _cache = {}
+        else:
+            try:
+                _cache = json.loads(RATE_HISTORY_PATH.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                _cache = {}
+    return _cache
 
 
 def save(data: dict) -> None:
+    global _cache
     RATE_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RATE_HISTORY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Atomic: write to a sibling temp file, then rename over the real path,
+    # so a crash mid-write can't leave a half-written, unparseable file.
+    tmp_path = RATE_HISTORY_PATH.with_suffix(".tmp.json")
+    tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp_path.replace(RATE_HISTORY_PATH)
+    _cache = data
 
 
 def get_rate(currency: str, date: Date) -> float | None:
@@ -71,3 +88,29 @@ def get_latest_rate(currency: str) -> tuple[Date, float] | None:
         return None
     latest_iso = max(entries)
     return Date.fromisoformat(latest_iso), entries[latest_iso]
+
+
+def is_manual(currency: str, date: Date) -> bool:
+    """Whether this exact (currency, date) pair's cached rate came from a
+    manual override (e.g. the real, worse rate a bank card charged) rather
+    than an official source. Comparing a row's cell against "the cache
+    value a moment ago" can't reliably tell a manual entry apart from an
+    auto-resolved one that happens to read the same number (they're
+    tautologically equal right after the manual write itself creates that
+    cache entry) -- so this is tracked explicitly instead. Day-level, same
+    granularity as the cache itself (a documented, accepted limitation:
+    a manual correction protects the whole day for that currency, not
+    just the one transaction it was typed for)."""
+    return date.isoformat() in load().get("_manual", {}).get(currency, [])
+
+
+def set_manual(currency: str, date: Date) -> None:
+    """Mark this (currency, date) pair as manually-priced -- an explicit,
+    permanent refresh (RateSyncWorker's targets= mode) must never silently
+    overwrite it; see is_manual()."""
+    data = load()
+    days = data.setdefault("_manual", {}).setdefault(currency, [])
+    iso = date.isoformat()
+    if iso not in days:
+        days.append(iso)
+    save(data)

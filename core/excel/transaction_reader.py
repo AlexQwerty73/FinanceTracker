@@ -52,9 +52,13 @@ def read_month(ws, col: dict[str, int], month_name: str) -> list[dict]:
         # A row with a blank/garbled date (a real error a spreadsheet edit
         # can introduce -- see transaction_validator.py) must not crash the
         # sort: group real dates first (newest first, tiebroken by row),
-        # anything invalid sorts after, in row order.
+        # anything invalid sorts after, in row order. Normalize datetime to
+        # date too -- openpyxl usually yields datetime, but a bare date
+        # slipping in (e.g. via an external tool) would otherwise crash the
+        # comparison (datetime and date don't compare to each other).
         valid = lambda d: isinstance(d, (Date, datetime))
-        result.sort(key=lambda tx: (valid(tx["date"]), tx["date"] if valid(tx["date"]) else 0, tx["_row"]), reverse=True)
+        norm = lambda d: d.date() if isinstance(d, datetime) else d
+        result.sort(key=lambda tx: (valid(tx["date"]), norm(tx["date"]) if valid(tx["date"]) else 0, tx["_row"]), reverse=True)
     else:
         result.reverse()  # no date column — row order (append order) is the best signal
     return result

@@ -177,8 +177,8 @@ class AnalyticsPage(QWidget):
         # two more tracked series (on top of balance/cash/card) means one
         # more dict key each, not two more parameters threaded through both
         # _append_*_points() methods.
-        points: dict[str, list[tuple[str, float, float]]] = {k: [] for k in ("balance", "cash", "card", "income", "expense")}
-        totals: dict[str, float] = dict.fromkeys(("balance", "cash", "card"), 0.0)
+        points: dict[str, list[tuple[str, float, float]]] = {k: [] for k in ("balance", "cash", "card")}
+        totals: dict[str, float] = dict.fromkeys(points, 0.0)
         expense_breakdown: dict[str, float] = {}
         income_breakdown: dict[str, float] = {}
 
@@ -202,6 +202,7 @@ class AnalyticsPage(QWidget):
                     self._append_monthly_points(schema, txs, y, m, has_cash_tracking, period_start, points, totals)
 
             growth_points = self._compute_growth_points(periods)
+            income_expense_points = self._compute_income_expense_points(periods, period_start)
         except (ValueError, WorkbookLockedError) as exc:
             self._status.setText(str(exc))
             return
@@ -218,10 +219,6 @@ class AnalyticsPage(QWidget):
             shared_range = (shared_range[0] - pad, shared_range[1] + pad)
         self._balance_line.update_data(points["balance"], shared_range)
         self._rebuild_growth_grid(growth_points)
-        income_expense_points = [
-            (label, income, expense, x)
-            for (label, income, x), (_, expense, _x) in zip(points["income"], points["expense"])
-        ]
         self._income_expense_line.update_data(income_expense_points, shared_range)
         self._cash_flow.update_data(points["cash"], shared_range)
         self._card_flow.update_data(points["card"], shared_range)
@@ -247,6 +244,24 @@ class AnalyticsPage(QWidget):
                 growth_points.append((y, m, pct))
             prev_month_balance = month_running
         return growth_points
+
+    def _compute_income_expense_points(
+        self, periods: list[tuple[int, int]], period_start: Date,
+    ) -> list[tuple[str, float, float, float]]:
+        """Income vs Expense is always month-level, independent of the
+        Granularity toggle — a day's income/expense is almost always either
+        zero or one lump payment (a payday, a rent due-date), so a daily
+        breakdown is mostly noise/gaps rather than a meaningful trend; the
+        month figure is the only granularity that's actually informative
+        here (same reasoning as the growth-% grid above)."""
+        result: list[tuple[str, float, float, float]] = []
+        for y, m in periods:
+            schema = registry.get_schema_for_date(Date(y, m, 1))
+            summary = schema.month_summary(m)
+            label = f"{MONTH_NAMES[m - 1][:3]} '{y % 100:02d}"
+            x = (Date(y, m, 1) - period_start).days
+            result.append((label, summary["income"], summary["expense"], x))
+        return result
 
     def _rebuild_growth_grid(self, points: list[tuple[int, int, float]]) -> None:
         """One row per year (a year label in column 0, then each month's
@@ -327,12 +342,6 @@ class AnalyticsPage(QWidget):
         summary = schema.month_summary(m)
         totals["balance"] += summary["balance"]
         points["balance"].append((label, totals["balance"], x))
-        # Income/Expense are per-month figures on their own chart, not a
-        # running total (unlike Balance/Cash/Card, which are cumulative) —
-        # the point is "how much in this specific month", not "how much
-        # ever".
-        points["income"].append((label, summary["income"], x))
-        points["expense"].append((label, summary["expense"], x))
 
         if has_cash_tracking:
             cash_net = card_net = 0.0
@@ -352,8 +361,6 @@ class AnalyticsPage(QWidget):
     ) -> None:
         is_current_month = (y, m) == (today.year, today.month)
         net_by_day: dict[Date, float] = {}
-        income_by_day: dict[Date, float] = {}
-        expense_by_day: dict[Date, float] = {}
         cash_net_by_day: dict[Date, float] = {}
         card_net_by_day: dict[Date, float] = {}
 
@@ -367,10 +374,8 @@ class AnalyticsPage(QWidget):
             amt = schema.convert_transaction(tx)
             if schema.is_income_type(tx.get("type")):
                 net_by_day[day] = net_by_day.get(day, 0.0) + amt
-                income_by_day[day] = income_by_day.get(day, 0.0) + amt
             elif schema.is_expense_type(tx.get("type")):
                 net_by_day[day] = net_by_day.get(day, 0.0) - amt
-                expense_by_day[day] = expense_by_day.get(day, 0.0) + amt
             if has_cash_tracking:
                 cash_delta, card_delta = cls._cash_card_delta(schema, tx)
                 cash_net_by_day[day] = cash_net_by_day.get(day, 0.0) + cash_delta
@@ -384,8 +389,6 @@ class AnalyticsPage(QWidget):
             x = (day - period_start).days
             totals["balance"] += net_by_day.get(day, 0.0)
             points["balance"].append((label, totals["balance"], x))
-            points["income"].append((label, income_by_day.get(day, 0.0), x))
-            points["expense"].append((label, expense_by_day.get(day, 0.0), x))
             if has_cash_tracking:
                 totals["cash"] += cash_net_by_day.get(day, 0.0)
                 points["cash"].append((label, totals["cash"], x))

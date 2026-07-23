@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QGridLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from core import settings
+from core import rate_history, settings
 from core.excel import registry
 from core.excel.base import MONTH_NAMES, YearSchema
 from core.format import fmt_amount
@@ -65,6 +65,25 @@ def _currency_tracked_years() -> list[int]:
         if schema.get_currencies() is not None:
             years.append(y)
     return years
+
+
+def _currencies_needing_rate_source() -> list[str]:
+    """Currencies actually used in a transaction that have never received
+    a single cached exchange rate, despite the app-launch auto-sync
+    having run for every used currency automatically — almost certainly
+    means core/rate_fetcher.py genuinely has no source that covers this
+    currency (see its own module docstring for the currently-wired
+    sources), not just "hasn't been fetched yet". Per the project's
+    modularity preference, this must be a visible, localized message, not
+    a currency that silently never converts."""
+    bases = {
+        schema.get_base_currency()
+        for y in _currency_tracked_years()
+        if (schema := registry.get_schema_for_date(Date(y, 1, 1))).get_base_currency()
+    }
+    used = {tx.get("currency") for _schema, tx in _all_currency_transactions() if tx.get("currency")}
+    cache = rate_history.load()
+    return sorted(cur for cur in used - bases if not cache.get(cur))
 
 
 def _all_currency_transactions() -> list[tuple[YearSchema, dict]]:
@@ -188,6 +207,13 @@ class CurrenciesPage(QWidget):
         rate_sync_row.addStretch()
         nw_lay.addLayout(rate_sync_row)
 
+        self._no_rate_warning_lbl = QLabel("")
+        self._no_rate_warning_lbl.setWordWrap(True)
+        self._no_rate_warning_lbl.setFont(QFont("Segoe UI", font_size("micro")))
+        self._no_rate_warning_lbl.setStyleSheet(f"color:{c('err_c')}; background:transparent;")
+        self._no_rate_warning_lbl.setVisible(False)
+        nw_lay.addWidget(self._no_rate_warning_lbl)
+
         lay.addWidget(self._nw_box)
 
         # ── Per-currency movement card ─────────────────────────────────────
@@ -240,6 +266,14 @@ class CurrenciesPage(QWidget):
             schema = registry.get_schema_for_date(Date(y, 1, 1))
             configured |= set(schema.get_currencies() or [])
         self._currencies = sorted(seen | configured)
+
+        missing_sources = _currencies_needing_rate_source()
+        self._no_rate_warning_lbl.setVisible(bool(missing_sources))
+        if missing_sources:
+            self._no_rate_warning_lbl.setText(
+                f"No exchange rate source found for: {', '.join(missing_sources)} — these transactions "
+                "won't convert correctly until a rate is entered manually or a source is added."
+            )
 
         has_tracking = bool(_currency_tracked_years())
         self._nw_empty_lbl.setVisible(not has_tracking)
@@ -300,6 +334,20 @@ class CurrenciesPage(QWidget):
             if snap["id"] == active_id:
                 return snap
         return None
+
+    _STALE_SNAPSHOT_DAYS = 60
+
+    def _staleness_suffix(self, snapshot_date_iso: str) -> str:
+        """A quiet one-line nudge appended to the snapshot status label
+        when the active snapshot is more than _STALE_SNAPSHOT_DAYS old —
+        the monthly ledger keeps extending itself automatically, but the
+        entered *balances* only ever update when the user takes a fresh
+        snapshot, so an old one silently drifts from reality the longer
+        it goes untouched. No modal, no repeated nagging -- just this."""
+        age_days = (Date.today() - Date.fromisoformat(snapshot_date_iso)).days
+        if age_days <= self._STALE_SNAPSHOT_DAYS:
+            return ""
+        return f" Snapshot is {age_days} days old — consider taking a fresh one."
 
     def _applied_snapshot(self) -> dict | None:
         """The snapshot whose numbers should actually be used right now —
@@ -363,15 +411,15 @@ class CurrenciesPage(QWidget):
         self._use_snapshot_check.setChecked(settings.get_net_worth_snapshot_use_enabled())
         self._use_snapshot_check.blockSignals(False)
 
-        if self._active_snapshot() is None:
+        active = self._active_snapshot()
+        if active is None:
             self._snapshot_status_lbl.setText("No snapshot yet — click \"Take snapshot\" to get started.")
         elif snapshot is None:
-            active = self._active_snapshot()
-            self._snapshot_status_lbl.setText(
-                f"Active snapshot: {active['date']} — currently not applied (tick \"Use snapshot\")."
-            )
+            text = f"Active snapshot: {active['date']} — currently not applied (tick \"Use snapshot\")."
+            self._snapshot_status_lbl.setText(text + self._staleness_suffix(active["date"]))
         else:
-            self._snapshot_status_lbl.setText(f"Active snapshot: {snapshot['date']} (taken {snapshot['taken_at'][:16].replace('T', ' ')}).")
+            text = f"Active snapshot: {snapshot['date']} (taken {snapshot['taken_at'][:16].replace('T', ' ')})."
+            self._snapshot_status_lbl.setText(text + self._staleness_suffix(snapshot["date"]))
 
         for currency, (cash_lbl, card_lbl) in self._opening_labels.items():
             opening = snapshot.get("opening", {}).get(currency) if snapshot is not None else None

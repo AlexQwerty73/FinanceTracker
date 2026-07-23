@@ -30,13 +30,18 @@ def _migrate_old_shape(data: dict) -> None:
     """Upgrade the old one-file-per-year shape (`{"path":..., "template":
     ...}`) into the current multi-candidate shape (`{"active_path":...,
     "candidates":[...]}`) in place, so an existing install's settings.json
-    keeps working without a manual migration step."""
+    keeps working without a manual migration step. Also drops the
+    top-level "net_worth" key from an even older, pre-snapshot-history
+    round (a flat currency -> {cash, card} live dict) -- nothing reads or
+    writes it anymore (superseded by "net_worth_snapshots"), it's just
+    dead weight left over on disk for anyone who used that earlier round."""
     for entry in data.setdefault("files", {}).values():
         if "candidates" not in entry:
             path, template = entry["path"], entry["template"]
             entry.clear()
             entry["active_path"] = path
             entry["candidates"] = [{"path": path, "template": template}]
+    data.pop("net_worth", None)
 
 
 def load() -> dict:
@@ -56,7 +61,19 @@ def save(data: dict) -> None:
     # scratch file — creates the right parent dir instead of also touching
     # the real ~/.financetracker.
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Keep the previous version alongside the new one -- this file holds
+    # every net-worth snapshot ever taken (irreplaceable, hand-entered
+    # data), so a plain one-copy backup is cheap, real insurance against a
+    # bad write (this machine's only copy of it, see the project's backup
+    # gap note) -- not a substitute for a real backup job, just a floor.
+    if SETTINGS_PATH.exists():
+        SETTINGS_PATH.replace(SETTINGS_PATH.with_suffix(".json.bak"))
+    # Atomic: write to a sibling temp file, then rename over the real path
+    # -- a crash or power loss mid-write leaves the last-good file (or the
+    # .bak above) intact instead of a half-written, unparseable JSON file.
+    tmp_path = SETTINGS_PATH.with_suffix(".tmp.json")
+    tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp_path.replace(SETTINGS_PATH)
 
 
 def register_candidate(year: int, path: Path, template: str, activate: bool = True) -> None:

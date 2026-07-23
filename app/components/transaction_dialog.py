@@ -157,7 +157,18 @@ class TransactionDialog(QDialog):
         schema, currency, date_, amount = ctx
 
         self._set_row_mode(visible=True)
-        new_auto_rate = schema.resolve_rate(currency, date_)
+        # Editing an existing row that still has the same currency/date it
+        # was saved with: show what's actually persisted on the row itself
+        # (the table is the database), not a fresh cache/current-table
+        # resolution that may have drifted since — e.g. a manually-priced
+        # rate must keep showing as itself, not "correct" back to the
+        # official rate just because the dialog reopened.
+        if self._is_edit and self._tx.get("rate") is not None and currency == self._tx.get("currency") and date_ == (
+            self._tx["date"].date() if hasattr(self._tx.get("date"), "date") else self._tx.get("date")
+        ):
+            new_auto_rate = self._tx["rate"]
+        else:
+            new_auto_rate = schema.resolve_rate(currency, date_)
         new_auto_base = amount * new_auto_rate if new_auto_rate is not None else None
 
         # Only overwrite a field if the user hasn't diverged it from the
@@ -261,7 +272,12 @@ class TransactionDialog(QDialog):
         target_date = date_
         self._refresh_rate_btn.setEnabled(False)
         self._rate_lbl.setText("Fetching…")
-        self._rate_sync = RateSyncWorker(self, targets={(currency, target_date)})
+        # Editing an existing transaction: force this exact row so an
+        # explicit "refresh" click always wins for it, even if its Rate
+        # cell was manually priced — clicking the button here is direct
+        # intent to replace it, not an incidental day-wide update.
+        force_rows = {self._tx["_row"]} if self._is_edit else None
+        self._rate_sync = RateSyncWorker(self, targets={(currency, target_date)}, force_rows=force_rows)
         self._rate_sync.sync_finished.connect(self._on_rate_sync_finished)
         self._rate_sync.start()
 

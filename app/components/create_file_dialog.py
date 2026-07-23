@@ -3,10 +3,10 @@ app/components/create_file_dialog.py — CreateFileWidget: generate a
 brand-new, blank Finances_<year>.xlsx from one of the two built-in layouts
 and register it, so someone without an existing file (e.g. this app
 shared with someone else) can start using it from scratch. Lives as one
-tab inside SettingsDialog (app/components/settings_dialog.py) — a plain
-QWidget, not its own top-level dialog, so it has no Cancel/close of its
-own; "Create" just leaves a success message and stays open (the outer
-Settings dialog is what the user closes when done).
+tab inside SettingsPage (app/pages/settings_page.py) — a plain QWidget,
+not its own top-level dialog, so it has no Cancel/close of its own;
+"Create" just leaves a success message and stays open (Settings is a
+page now, navigated away from via the sidebar, not closed).
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class CreateFileWidget(QWidget):
         self._template_combo.setStyleSheet(input_style())
         self._template_combo.currentIndexChanged.connect(self._on_template_selection_changed)
         lay.addWidget(self._template_combo)
-        self._refresh_template_combo()
+        self.refresh_template_combo()
 
         lay.addWidget(field_label("Year"))
         self._year_field = QLineEdit(str(self._suggest_year()))
@@ -86,7 +86,11 @@ class CreateFileWidget(QWidget):
         lay.addWidget(create_btn)
         lay.addStretch()
 
-    def _refresh_template_combo(self, select_id: str | None = None) -> None:
+    def refresh_template_combo(self, select_id: str | None = None) -> None:
+        """Public — SettingsPage calls this when TemplatesPage saves a new
+        template, so it shows up here immediately without navigating away
+        and back (Settings is one persistent page instance now, not
+        recreated fresh on every open)."""
         self._template_combo.blockSignals(True)
         self._template_combo.clear()
         self._template_combo.addItem("Simple — quick monthly entry, no per-transaction date", settings.TEMPLATE_2025)
@@ -103,10 +107,10 @@ class CreateFileWidget(QWidget):
     def _on_template_selection_changed(self, _index: int) -> None:
         if self._template_combo.currentData() != _NEW_TEMPLATE_SENTINEL:
             return
-        # Template design now happens on its own page (live preview etc.) —
-        # the parent SettingsDialog listens for this and closes itself so
-        # the app can switch there; the new template will show up in this
-        # combo next time this tab is opened.
+        # Template design happens on the Templates tab (live preview etc.)
+        # — SettingsPage listens for this and switches the tab in place;
+        # saving there emits template_saved back to refresh_template_combo()
+        # above, so the new template shows up here immediately.
         self.manage_templates_requested.emit()
 
     def _suggest_year(self) -> int:

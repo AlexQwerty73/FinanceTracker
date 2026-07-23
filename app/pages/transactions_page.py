@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from core import prefs
 from core.excel import registry
 from core.excel.base import MONTH_NAMES, TransactionNotFoundError
 from core.excel.schema_dynamic import rate_from_amounts
@@ -150,9 +151,19 @@ class TransactionsPage(QWidget):
             QPushButton:hover {{ color:{c('err_c')}; border-color:{c('err_c')}; }}
         """)
         self._delete_btn.clicked.connect(self._on_delete)
+        self._undo_btn = QPushButton("Undo delete")
+        self._undo_btn.setFixedHeight(32)
+        self._undo_btn.setVisible(False)
+        self._undo_btn.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{c('ac')};
+                border:1px solid {c('in_bd')}; border-radius:6px; padding:0 16px; }}
+            QPushButton:hover {{ border-color:{c('ac')}; }}
+        """)
+        self._undo_btn.clicked.connect(self._on_undo_delete)
         row_actions.addWidget(self._edit_btn)
         row_actions.addWidget(self._refresh_rate_btn)
         row_actions.addWidget(self._delete_btn)
+        row_actions.addWidget(self._undo_btn)
         lay.addLayout(row_actions)
 
     def _set_status(self, text: str, error: bool = True) -> None:
@@ -175,6 +186,7 @@ class TransactionsPage(QWidget):
             return
 
         self._set_status("", error=False)
+        self._undo_btn.setVisible(prefs.has_last_deleted())
         self._apply_filter()
 
     def _apply_filter(self) -> None:
@@ -455,7 +467,10 @@ class TransactionsPage(QWidget):
 
         self._refresh_rate_btn.setEnabled(False)
         self._set_status("Fetching…", error=False)
-        self._rate_sync = RateSyncWorker(self, targets={(currency, target_date)})
+        # Explicit refresh for this exact selected row always wins, even
+        # over a manually-priced rate — same rule as the dialog's own
+        # "Refresh rate" button.
+        self._rate_sync = RateSyncWorker(self, targets={(currency, target_date)}, force_rows={tx["_row"]})
         self._rate_sync.sync_finished.connect(self._on_rate_sync_finished)
         self._rate_sync.start()
 
@@ -492,4 +507,32 @@ class TransactionsPage(QWidget):
         except (TransactionNotFoundError, WorkbookLockedError) as exc:
             self._set_status(str(exc))
             return
+        prefs.set_last_deleted({
+            "year": self._current_schema.year, "month": tx.get("month"), "date": tx.get("date"),
+            "type": tx.get("type"), "category": tx.get("category"), "amount": tx.get("amount"),
+            "payment_type": tx.get("payment_type"), "note": tx.get("note") or "",
+            "currency": tx.get("currency"), "rate": tx.get("rate"),
+        })
+        self.refresh(self._year, self._month)  # clears the status label -- message set after, same gotcha as _commit_row
+        self._set_status("Deleted.", error=False)
+
+    def _on_undo_delete(self) -> None:
+        entry = prefs.pop_last_deleted()
+        if entry is None:
+            self._undo_btn.setVisible(False)
+            return
+        date_val = entry["date"]
+        if date_val is None:
+            month_num = MONTH_NAMES.index(entry["month"]) + 1
+            date_val = Date(entry["year"], month_num, 1)
+        try:
+            schema = registry.get_schema_for_date(date_val)
+            schema.add_transaction(
+                date_val, entry["type"], entry["category"], entry["amount"], entry["payment_type"],
+                entry["note"], entry["currency"], entry["rate"],
+            )
+        except (ValueError, WorkbookLockedError) as exc:
+            self._set_status(str(exc))
+            return
         self.refresh(self._year, self._month)
+        self._set_status("Restored.", error=False)

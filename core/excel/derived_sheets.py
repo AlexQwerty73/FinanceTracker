@@ -214,11 +214,28 @@ def refresh(wb, schema) -> bool:
     for month_name in MONTH_NAMES:
         styling.add_dropdowns(wb[month_name], schema._col)
 
+    # Lazy import -- schema_dynamic imports this module, so importing it
+    # back at module level here would be circular; by the time refresh()
+    # actually runs, both modules are already fully loaded.
+    from .schema_dynamic import _base_amount_formula
+
+    rate_col = schema._col.get(ROLE_RATE)
+    amount_col = schema._col.get(ROLE_AMOUNT)
     _clear_rows(ws_all)
     row = 2
     for m in range(1, 13):
         for tx in reversed(schema.transactions_for_month(m)):  # oldest-first, chronological overall
             for role, col in schema._col.items():
-                ws_all.cell(row=row, column=col).value = tx.get(_ROLE_TO_TXKEY[role])
+                if role == ROLE_BASE_AMOUNT and rate_col:
+                    # Amount(base) is a formula on the month sheets too (see
+                    # schema_dynamic._base_amount_formula) -- tx["base_amount"]
+                    # is always None for those rows (a cell-reference formula
+                    # can't be read back as a number), which used to leave
+                    # this mirror sheet's own Amount(base) blank for every
+                    # foreign-currency row. Mirror the same formula here
+                    # instead, referencing this sheet's own row/columns.
+                    ws_all.cell(row=row, column=col).value = _base_amount_formula(row, amount_col, rate_col)
+                else:
+                    ws_all.cell(row=row, column=col).value = tx.get(_ROLE_TO_TXKEY[role])
             row += 1
     return True

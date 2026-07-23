@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
+from core import settings
 from core.excel import registry
 from core.excel.workbook_io import WorkbookLockedError
 from core.format import fmt_amount
@@ -23,6 +24,9 @@ from core.themes import c, font_size, radius
 
 from ..components.charts import CategoryPieChart, RunningBalanceChart
 from ..components.widgets import bordered_box, card, scrollable_area, section_label
+
+_FORECAST_MONTHS = 6
+_FORECAST_MIN_MONTHS = 3
 
 _TILES = [
     ("income", "Income", "income_c"),
@@ -36,6 +40,65 @@ _SIGNED_TILES = {"cash", "card"}
 _TILES_PER_ROW = len(_TILES)
 
 _PREVIEW_ROWS = 5
+
+
+def _current_snapshot_total(schema) -> tuple[float, str] | None:
+    """(total in `schema`'s base currency, snapshot date) from the
+    Currencies page's applied net-worth snapshot's raw entered balances —
+    None if snapshot use is switched off, nothing is active, or the
+    active snapshot's currencies can't be converted (no current rate
+    known). Deliberately the plain entered figures, not rolled forward via
+    core/net_worth_ledger.balance_at() to today — the snapshot's own date
+    is shown alongside so a stale snapshot reads as stale, not as a
+    silently "corrected" number (see the snapshot-staleness hint on the
+    Currencies page for the other half of that same nudge)."""
+    if not settings.get_net_worth_snapshot_use_enabled():
+        return None
+    active_id = settings.get_active_net_worth_snapshot_id()
+    if active_id is None:
+        return None
+    snapshot = next((s for s in settings.get_net_worth_snapshots() if s["id"] == active_id), None)
+    if snapshot is None:
+        return None
+    base_currency = schema.get_base_currency()
+    rates = schema.get_rates() if base_currency else None
+    total = 0.0
+    for currency, amounts in snapshot.get("balances", {}).items():
+        amount = (amounts.get("cash", 0.0) or 0.0) + (amounts.get("card", 0.0) or 0.0)
+        if base_currency is None:
+            total += amount  # no currency tracking at all -- one implicit currency
+            continue
+        rate = 1.0 if currency == base_currency else (rates or {}).get(currency)
+        if rate is None:
+            continue
+        total += amount * rate
+    return total, snapshot["date"]
+
+
+def _recent_average_balance() -> tuple[float, int] | None:
+    """(average month_summary()["balance"], month count) over the last up
+    to _FORECAST_MONTHS full (already-completed) months before today,
+    walking backward across year boundaries via registry as needed —
+    anchored at today regardless of which month the Dashboard happens to
+    be viewing, since a forecast is inherently about "from now on". None
+    if fewer than _FORECAST_MIN_MONTHS of those months could actually be
+    read (a new install with little history yet, or an unregistered
+    older year)."""
+    today = Date.today()
+    y, m = today.year, today.month
+    values: list[float] = []
+    for _ in range(_FORECAST_MONTHS):
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+        try:
+            schema = registry.get_schema_for_date(Date(y, m, 1))
+            values.append(schema.month_summary(m)["balance"])
+        except (ValueError, WorkbookLockedError):
+            break
+    if len(values) < _FORECAST_MIN_MONTHS:
+        return None
+    return sum(values) / len(values), len(values)
 
 
 class DashboardPage(QWidget):
@@ -73,14 +136,44 @@ class DashboardPage(QWidget):
             title_lbl = QLabel(title)
             title_lbl.setFont(QFont("Segoe UI", font_size("label")))
             title_lbl.setStyleSheet(f"color:{c('t2')}; background:transparent;")
+            value_row = QHBoxLayout()
+            value_row.setSpacing(6)
             value_lbl = QLabel("0.00")
             value_lbl.setFont(QFont("Segoe UI", font_size("stat"), QFont.Weight.Bold))
             value_lbl.setStyleSheet(f"color:{c(color_key)}; background:transparent;")
+            value_row.addWidget(value_lbl)
+            if key == "balance":
+                self._growth_badge_lbl = QLabel("")
+                self._growth_badge_lbl.setFont(QFont("Segoe UI", font_size("micro"), QFont.Weight.Bold))
+                self._growth_badge_lbl.setVisible(False)
+                value_row.addWidget(self._growth_badge_lbl)
+            value_row.addStretch()
             box_lay.addWidget(title_lbl)
-            box_lay.addWidget(value_lbl)
+            box_lay.addLayout(value_row)
             tiles_grid.addWidget(box, i // _TILES_PER_ROW, i % _TILES_PER_ROW)
             self._tile_labels[key] = value_lbl
         lay.addLayout(tiles_grid)
+
+        self._forecast_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=radius("lg"))
+        self._forecast_box.setVisible(False)
+        forecast_lay = QVBoxLayout(self._forecast_box)
+        forecast_lay.setContentsMargins(16, 12, 16, 12)
+        forecast_lay.setSpacing(2)
+        forecast_title = QLabel("Cash-flow forecast")
+        forecast_title.setFont(QFont("Segoe UI", font_size("label")))
+        forecast_title.setStyleSheet(f"color:{c('t2')}; background:transparent;")
+        forecast_lay.addWidget(forecast_title)
+        self._forecast_lbl = QLabel("")
+        self._forecast_lbl.setWordWrap(True)
+        self._forecast_lbl.setFont(QFont("Segoe UI", font_size("stat"), QFont.Weight.Bold))
+        self._forecast_lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
+        forecast_lay.addWidget(self._forecast_lbl)
+        self._forecast_note_lbl = QLabel("")
+        self._forecast_note_lbl.setWordWrap(True)
+        self._forecast_note_lbl.setFont(QFont("Segoe UI", font_size("micro")))
+        self._forecast_note_lbl.setStyleSheet(f"color:{c('t3')}; background:transparent;")
+        forecast_lay.addWidget(self._forecast_note_lbl)
+        lay.addWidget(self._forecast_box)
 
         balance_box, balance_lay = card("Balance this month")
         self._balance_chart = RunningBalanceChart()
@@ -144,6 +237,7 @@ class DashboardPage(QWidget):
 
         base_currency = schema.get_base_currency()
         self._status.setText("")
+        self._refresh_growth_badge(year, month, summary["balance"])
         for key, _title, _color in _TILES:
             if key in _SIGNED_TILES:
                 continue
@@ -165,6 +259,59 @@ class DashboardPage(QWidget):
 
         self._balance_chart.update_data(self._build_running_balance(schema, txs))
         self._render_preview(schema, txs[:_PREVIEW_ROWS])
+        self._refresh_forecast(schema)
+
+    def _refresh_forecast(self, schema) -> None:
+        """'At this rate, cash lasts ~N months' — current balance from the
+        applied net-worth snapshot (Currencies page), divided by the
+        average net monthly spend over the last few full months. Hidden
+        entirely (not shown as a misleading number) unless there's both an
+        applied snapshot and enough recent history to average — no
+        recurring-expense detection, just the plain trend, per the user's
+        own choice of the simple version over a subscription-based one."""
+        total = _current_snapshot_total(schema)
+        recent = _recent_average_balance()
+        if total is None or recent is None:
+            self._forecast_box.setVisible(False)
+            return
+        current_balance, snapshot_date = total
+        avg_balance, month_count = recent
+        if avg_balance >= 0 or current_balance <= 0:
+            # Net saving lately, or nothing left to project from -- "cash
+            # lasts forever" isn't a useful number to show either way.
+            self._forecast_box.setVisible(False)
+            return
+
+        months_left = current_balance / -avg_balance
+        self._forecast_box.setVisible(True)
+        self._forecast_lbl.setText(f"~{months_left:.1f} months")
+        self._forecast_note_lbl.setText(
+            f"At the average net spend over the last {month_count} months, based on the net worth "
+            f"snapshot from {snapshot_date}."
+        )
+
+    def _refresh_growth_badge(self, year: int, month: int, this_month_balance: float) -> None:
+        """'+X.X%' next to the Balance tile, vs. the previous calendar
+        month's own balance — hidden entirely (not shown as a misleading
+        0%) if that previous month's year isn't registered, or its own
+        balance was exactly 0 (no defined % change), matching the same
+        rule Analytics' growth grid already uses."""
+        prev_month, prev_year = (12, year - 1) if month == 1 else (month - 1, year)
+        try:
+            prev_schema = registry.get_schema_for_date(Date(prev_year, prev_month, 1))
+            prev_balance = prev_schema.month_summary(prev_month)["balance"]
+        except (ValueError, WorkbookLockedError):
+            self._growth_badge_lbl.setVisible(False)
+            return
+        if not prev_balance:  # None or 0 -- no defined % change to show
+            self._growth_badge_lbl.setVisible(False)
+            return
+        pct = (this_month_balance - prev_balance) / abs(prev_balance) * 100
+        self._growth_badge_lbl.setText(f"{pct:+.1f}% vs last month")
+        self._growth_badge_lbl.setStyleSheet(
+            f"color:{c('income_c') if pct >= 0 else c('expense_c')}; background:transparent;"
+        )
+        self._growth_badge_lbl.setVisible(True)
 
     def _set_signed_tile(self, key: str, value: float | None, base_currency: str | None = None) -> None:
         lbl = self._tile_labels[key]

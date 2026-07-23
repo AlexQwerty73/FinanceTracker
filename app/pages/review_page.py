@@ -2,9 +2,9 @@
 app/pages/review_page.py — ReviewPage: three lists worth a second look —
 possible accidental double-entries and outlier amounts (core/duplicates.py,
 heuristic) plus rows that fail outright (core/excel/transaction_validator.py:
-bad date, non-numeric amount, an unknown currency, or Amount(base) that
-doesn't match Amount x Rate). All-time/all-years, refreshed lazily only
-when the page becomes visible, mirroring Currencies.
+bad date, non-numeric amount, a non-positive rate, or an unknown currency).
+All-time/all-years, refreshed lazily only when the page becomes visible,
+mirroring Currencies.
 
 Duplicates are directly actionable here: each row's own "Delete" button
 calls schema.delete_transaction() straight from this page — no detour
@@ -19,9 +19,12 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from core import settings
+from datetime import date as Date
+
+from core import prefs, settings
 from core.duplicates import DuplicateGroup, Outlier, detect_duplicates, detect_outliers
-from core.excel.base import TransactionNotFoundError
+from core.excel import registry
+from core.excel.base import MONTH_NAMES, TransactionNotFoundError
 from core.excel.transaction_validator import InvalidRow, detect_invalid_rows
 from core.excel.workbook_io import WorkbookLockedError
 from core.format import fmt_amount
@@ -65,10 +68,16 @@ class ReviewPage(QWidget):
         hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         lay.addWidget(hdr)
 
+        status_row = QHBoxLayout()
         self._status = QLabel("")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{c('err_c')}; background:transparent;")
-        lay.addWidget(self._status)
+        status_row.addWidget(self._status, 1)
+        self._undo_btn = secondary_button("Undo delete")
+        self._undo_btn.setVisible(False)
+        self._undo_btn.clicked.connect(self._on_undo_delete)
+        status_row.addWidget(self._undo_btn)
+        lay.addLayout(status_row)
 
         # ── Possible duplicates ─────────────────────────────────────────
         dup_box, dup_lay = card("Possible duplicates")
@@ -183,6 +192,7 @@ class ReviewPage(QWidget):
         self._refresh_outliers_table()
         self._refresh_invalid_rows_table()
         self._refresh_ignored_list()
+        self._undo_btn.setVisible(prefs.has_last_deleted())
 
     def _refresh_duplicates_table(self) -> None:
         rows = [(group, tx) for group in self._duplicate_groups for tx in group.transactions]
@@ -221,7 +231,10 @@ class ReviewPage(QWidget):
             self._out_table.setItem(row, 1, QTableWidgetItem(date_str))
             self._out_table.setItem(row, 2, QTableWidgetItem(outlier.category))
             self._out_table.setItem(row, 3, QTableWidgetItem(fmt_amount(tx.get("amount") or 0, currency)))
-            typical = f"~{fmt_amount(outlier.category_mean, currency)} avg"
+            # category_mean/category_stdev are computed in base currency (so a
+            # multi-currency category's stats aren't skewed) -- format with
+            # the schema's base currency, not this one transaction's own.
+            typical = f"~{fmt_amount(outlier.category_mean, outlier.schema.get_base_currency())} avg"
             self._out_table.setItem(row, 4, QTableWidgetItem(typical))
 
             dismiss_btn = secondary_button("Dismiss")
@@ -256,7 +269,35 @@ class ReviewPage(QWidget):
         except (TransactionNotFoundError, WorkbookLockedError) as exc:
             self._set_status(str(exc))
             return
+        prefs.set_last_deleted({
+            "year": group.schema.year, "month": tx.get("month"), "date": tx.get("date"),
+            "type": tx.get("type"), "category": tx.get("category"), "amount": tx.get("amount"),
+            "payment_type": tx.get("payment_type"), "note": tx.get("note") or "",
+            "currency": tx.get("currency"), "rate": tx.get("rate"),
+        })
         self.refresh()
+        self._set_status("Deleted.")
+
+    def _on_undo_delete(self) -> None:
+        entry = prefs.pop_last_deleted()
+        if entry is None:
+            self._undo_btn.setVisible(False)
+            return
+        date_val = entry["date"]
+        if date_val is None:
+            month_num = MONTH_NAMES.index(entry["month"]) + 1
+            date_val = Date(entry["year"], month_num, 1)
+        try:
+            schema = registry.get_schema_for_date(date_val)
+            schema.add_transaction(
+                date_val, entry["type"], entry["category"], entry["amount"], entry["payment_type"],
+                entry["note"], entry["currency"], entry["rate"],
+            )
+        except (ValueError, WorkbookLockedError) as exc:
+            self._set_status(str(exc))
+            return
+        self.refresh()
+        self._set_status("Restored.")
 
     def _on_dismiss(self, signature: str) -> None:
         settings.set_review_item_ignored(signature, True)

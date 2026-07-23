@@ -9,21 +9,25 @@ by the UI thread).
 Two modes, one worker class (kept as one to share the fetch/spacing/
 signal plumbing rather than duplicating it):
 - `RateSyncWorker()` (no targets) — the default, automatic mode, two
-  passes: (1) `_unwritten_cells()` — every (currency, date) pair whose
+  passes: (1) `_unwritten_cells()` — every (currency, date, row) whose
   rate is *already cached* but whose own transaction row still has a
   blank Rate/Amount(base) cell (e.g. typed directly into Excel from a
   phone, or migrated under an older rule) gets that cell filled in
-  immediately, no network call needed, the rate's already known; (2)
-  `_missing_currency_dates()` — pairs with no cached rate at all get
-  fetched, cached, and *then* also written to their cells the same way.
-  Used for the app-launch sync and the Currencies page's blanket
-  "Refresh rates" button.
-- `RateSyncWorker(targets={...})` — explicit mode: fetches exactly the
-  given (currency, date) pairs and **overwrites** whatever's already
-  cached for them, missing or not. Used for "refresh this one
-  transaction's rate" (transaction_dialog.py) and "refresh this date
-  range" (currencies_page.py) — both cases where the user is deliberately
-  asking to re-check a specific rate, not just fill gaps.
+  immediately, no network call needed, the rate's already known -- scoped
+  to that exact row so a manually-priced sibling row on the same day is
+  never touched; (2) `_missing_currency_dates()` — pairs with no cached
+  rate at all get fetched, cached, and *then* also written to their cells
+  the same way (always safe: no cache means no row on that pair could
+  have anything written yet either). Used for the app-launch sync and the
+  Currencies page's blanket "Refresh rates" button.
+- `RateSyncWorker(targets={...}, force_rows={...})` — explicit mode:
+  fetches exactly the given (currency, date) pairs. A pair the user has
+  manually priced (`rate_history.is_manual()`) is skipped entirely unless
+  `force_rows` is also given, in which case only those specific row(s)
+  are overwritten — the rest of that day's rows (manual or not) are left
+  alone. Used by "refresh this one transaction's rate"
+  (transaction_dialog.py / transactions_page.py), always with
+  `force_rows` set to that exact transaction's row.
 """
 from __future__ import annotations
 
@@ -67,11 +71,15 @@ def _missing_currency_dates() -> set[tuple[str, Date]]:
     return rate_history.missing_dates(_foreign_currency_dates())
 
 
-def _unwritten_cells() -> set[tuple[str, Date]]:
-    """Pairs that already have a cached rate (rate_history.json) but whose
-    row(s) still have a blank Rate/Amount(base) cell -- these need a cell
-    rewrite only, no network call, since the rate is already known."""
-    pairs: set[tuple[str, Date]] = set()
+def _unwritten_cells() -> set[tuple[str, Date, int]]:
+    """(currency, date, row) triples that already have a cached rate
+    (rate_history.json) but whose OWN row still has a blank Rate/Amount
+    (base) cell -- these need a cell rewrite only, no network call, since
+    the rate is already known. Scoped down to the specific row (not just
+    the currency/date pair) so filling in a blank neighbor can never touch
+    a different, already-written row sharing the same day -- including
+    one that was manually priced to something else on purpose."""
+    result: set[tuple[str, Date, int]] = set()
     for year in registry.supported_years():
         try:
             schema = registry.get_schema_for_date(Date(year, 1, 1))
@@ -90,8 +98,8 @@ def _unwritten_cells() -> set[tuple[str, Date]]:
                     continue  # already written
                 d = date_val.date() if hasattr(date_val, "date") else date_val
                 if rate_history.get_rate(currency, d) is not None:
-                    pairs.add((currency, d))
-    return pairs
+                    result.add((currency, d, tx["_row"]))
+    return result
 
 
 def _sync_current_rate(currency: str, date_: Date, rate: float) -> None:
@@ -111,17 +119,18 @@ def _sync_current_rate(currency: str, date_: Date, rate: float) -> None:
             continue
 
 
-def _write_rate_to_cells(currency: str, date_: Date, rate: float) -> None:
+def _write_rate_to_cells(currency: str, date_: Date, rate: float, rows: set[int] | None = None) -> None:
     """Push a known rate into every place the workbook itself should show
     it: the exact (currency, date) transaction row(s) via
-    refresh_converted_amounts(), and Lists!H:I's "current rate" cell if
-    this is genuinely the freshest date known for `currency`."""
+    refresh_converted_amounts() (`rows` — see that method's own docstring),
+    and Lists!H:I's "current rate" cell if this is genuinely the freshest
+    date known for `currency`."""
     try:
         schema = registry.get_schema_for_date(date_)
     except ValueError:
         pass
     else:
-        schema.refresh_converted_amounts(currency, date_, rate)
+        schema.refresh_converted_amounts(currency, date_, rate, rows=rows)
     _sync_current_rate(currency, date_, rate)
 
 
@@ -132,9 +141,13 @@ class RateSyncWorker(QThread):
 
     sync_finished = pyqtSignal(int)
 
-    def __init__(self, parent=None, targets: set[tuple[str, Date]] | None = None):
+    def __init__(
+        self, parent=None, targets: set[tuple[str, Date]] | None = None,
+        force_rows: set[int] | None = None,
+    ):
         super().__init__(parent)
         self._explicit_targets = targets
+        self._force_rows = force_rows
 
     def run(self) -> None:
         updated = 0
@@ -143,10 +156,13 @@ class RateSyncWorker(QThread):
         else:
             # Pass 1: rates already known (cached), just never written into
             # this specific row's cells -- no network call needed at all.
-            for currency, d in _unwritten_cells():
+            # Scoped to exactly that row (see _unwritten_cells()) so a
+            # manually-priced sibling row sharing the same day is never
+            # incidentally touched.
+            for currency, d, row in _unwritten_cells():
                 rate = rate_history.get_rate(currency, d)
                 if rate is not None:
-                    _write_rate_to_cells(currency, d, rate)
+                    _write_rate_to_cells(currency, d, rate, rows={row})
                     updated += 1
             targets = _missing_currency_dates()
 
@@ -159,14 +175,24 @@ class RateSyncWorker(QThread):
             rates = rate_fetcher.fetch_day(d)
             if rates:
                 for currency, date_ in targets:
-                    if date_ == d and currency in rates:
-                        rate_history.set_rate(currency, date_, rates[currency])
-                        # Any transaction already saved with an earlier
-                        # (e.g. current-table fallback) rate for this exact
-                        # (currency, date) needs its Rate/Amount(base) cells
-                        # brought in line with what the app now knows —
-                        # the workbook is the source of truth, not this cache.
-                        _write_rate_to_cells(currency, date_, rates[currency])
+                    if date_ != d or currency not in rates:
+                        continue
+                    if (
+                        self._explicit_targets is not None
+                        and not self._force_rows
+                        and rate_history.is_manual(currency, date_)
+                    ):
+                        # A day this currency was manually priced for (the
+                        # bank's real rate, deliberately different from the
+                        # official one) -- an explicit but *un-targeted*
+                        # refresh (a blanket/range click) must leave it
+                        # alone entirely, cache and cells both. A forced
+                        # refresh of one specific row (self._force_rows) is
+                        # direct intent and still goes through below, but
+                        # only ever touches that exact row's own cells.
+                        continue
+                    rate_history.set_rate(currency, date_, rates[currency])
+                    _write_rate_to_cells(currency, date_, rates[currency], rows=self._force_rows)
                 updated += 1
             time.sleep(_REQUEST_SPACING_SECONDS)
         self.sync_finished.emit(updated)

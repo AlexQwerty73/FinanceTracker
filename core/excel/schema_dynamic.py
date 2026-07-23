@@ -120,13 +120,18 @@ class DynamicSchema(YearSchema):
 
     def convert_transaction(self, tx: dict) -> float:
         """The base-currency amount for one transaction dict (as returned
-        by transactions_for_month()) -- trusts the row's own persisted
-        base_amount cell when there is one (the table is the database: an
-        error actually written there must show up here too, not get
-        silently recomputed away), else falls back to to_base_amount()
-        (historical/manual rate, pinned to the row's own date) -- Income
-        and Expense are treated identically: a rate pinned to when the
-        money actually changed hands, exactly like a bank statement. (An
+        by transactions_for_month()) -- the table is the database, so this
+        prefers whatever's actually persisted on the row itself, in order:
+        the base_amount cell if it's a literal number (older rows, before
+        Amount(base) became a formula); else amount * the row's own Rate
+        cell, if present (covers the common case today, and also a rate
+        typed directly into Excel from a phone, which the app must not
+        silently ignore just because it never went through
+        RateSyncWorker); only when NEITHER cell holds anything does this
+        fall back to to_base_amount() (historical/manual rate resolved
+        fresh, pinned to the row's own date) -- Income and Expense are
+        treated identically: a rate pinned to when the money actually
+        changed hands, exactly like a bank statement. (An
         earlier version of this app let foreign-currency Income "float" at
         the latest known rate instead, on the theory that unexchanged
         income isn't realized yet -- reverted after the user found the
@@ -140,6 +145,8 @@ class DynamicSchema(YearSchema):
         if tx.get("base_amount") is not None:
             return tx["base_amount"]
         amount, currency = tx.get("amount") or 0.0, tx.get("currency")
+        if tx.get("rate") is not None:
+            return amount * tx["rate"]
         return self.to_base_amount(amount, currency, tx.get("date"))
 
     def get_rates(self) -> dict[str, float] | None:
@@ -378,6 +385,7 @@ class DynamicSchema(YearSchema):
             if currency and currency != self.template.base_currency:
                 historical_date = date.date() if hasattr(date, "date") else date
                 rate_history.set_rate(currency, historical_date, rate)
+                rate_history.set_manual(currency, historical_date)
         else:
             rate = self.resolve_rate(currency, date)
         if ROLE_RATE in self._col:
@@ -434,14 +442,23 @@ class DynamicSchema(YearSchema):
         workbook_io.save(wb, self.file_path)
         self._refresh_derived_sheets()
 
-    def refresh_converted_amounts(self, currency: str, date: Date, rate: float) -> int:
+    def refresh_converted_amounts(self, currency: str, date: Date, rate: float, rows: set[int] | None = None) -> int:
         """Rewrite the Rate/Amount (base currency) cells for every
         transaction on `date` in `currency` with `rate` — called after
         RateSyncWorker fetches a better (e.g. real historical, replacing an
         earlier current-table fallback) rate for that exact (currency,
         date) pair, so cells already written keep matching what the app
         itself now believes is correct. No-ops if this template has
-        neither column. Returns the number of rows updated."""
+        neither column. Returns the number of rows updated.
+
+        `rows` — when given, only these row numbers are touched (still
+        also matched against `currency`/`date` as a sanity check) — used
+        by RateSyncWorker to scope an explicit "refresh THIS transaction"
+        click to that one row, leaving every other same-day row (whether
+        manually priced or not) alone. `None` updates every matching row,
+        the original blanket behavior. Whether a manually-priced
+        (currency, date) pair should be touched *at all* is decided one
+        level up, before this is even called — see rate_history.is_manual()."""
         if ROLE_RATE not in self._col and ROLE_BASE_AMOUNT not in self._col:
             return 0
         date_col = self._col.get(ROLE_DATE)
@@ -455,6 +472,8 @@ class DynamicSchema(YearSchema):
         amount_col = self._col[ROLE_AMOUNT]
         updated = 0
         for row in range(DATA_START_ROW, MAX_DATA_ROW + 1):
+            if rows is not None and row not in rows:
+                continue
             cell_date = ws.cell(row=row, column=date_col).value
             if cell_date is None:
                 continue
@@ -486,6 +505,7 @@ class DynamicSchema(YearSchema):
         currency_col = self._col.get(ROLE_CURRENCY)
         date_col = self._col.get(ROLE_DATE)
         base_amount_col = self._col.get(ROLE_BASE_AMOUNT)
+        rate_col = self._col.get(ROLE_RATE)
         rates = self._read_rates() if currency_col else None
 
         income = expense = invest = cash = 0.0
@@ -512,8 +532,17 @@ class DynamicSchema(YearSchema):
                 # foreign-currency row with a blank Amount(base) silently
                 # counted as 1:1 unconverted instead of being resolved.
                 base_amount = amount_value(ws.cell(row=row, column=base_amount_col).value) if base_amount_col else None
+                row_rate = amount_value(ws.cell(row=row, column=rate_col).value) if rate_col else None
                 if base_amount is not None:
                     amount = base_amount
+                elif row_rate is not None:
+                    # The row's own Rate cell -- prefer it over re-resolving
+                    # from the cache/current-table, same reasoning as
+                    # convert_transaction(): a rate typed straight into
+                    # Excel (e.g. from a phone) must be trusted here too,
+                    # not silently ignored because RateSyncWorker never
+                    # touched it.
+                    amount = amount * row_rate
                 elif currency and currency != self.template.base_currency:
                     date_val = ws.cell(row=row, column=date_col).value if date_col else None
                     d = date_val.date() if hasattr(date_val, "date") else date_val

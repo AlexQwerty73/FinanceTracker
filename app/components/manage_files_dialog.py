@@ -4,10 +4,9 @@ registered year's file currently lives, and move one to a different folder
 without touching Explorer — core.file_ops.move_year_file() handles the
 physical move and keeps settings.json/config.FILE_PATHS in sync. Also lets
 you change the default folder new files get suggested into
-(create_file_dialog.py). Lives as one tab inside SettingsDialog
-(app/components/settings_dialog.py) — a plain QWidget, not its own
-top-level dialog; the outer Settings dialog owns the one Close button for
-the whole thing.
+(create_file_dialog.py). Lives as one tab inside SettingsPage
+(app/pages/settings_page.py) — a plain QWidget, not its own top-level
+dialog.
 """
 from __future__ import annotations
 

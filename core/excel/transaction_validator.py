@@ -14,8 +14,6 @@ from datetime import date as Date, datetime
 from . import registry
 from .base import YearSchema
 
-CONSISTENCY_TOLERANCE = 0.01
-
 
 @dataclass
 class InvalidRow:
@@ -35,11 +33,16 @@ def _row_problems(schema: YearSchema, tx: dict) -> list[str]:
     currencies = schema.get_currencies()
     if currencies is not None and tx.get("currency") and tx["currency"] not in currencies:
         problems.append(f'currency "{tx["currency"]}" is not in the Lists sheet')
-    rate, base_amount = tx.get("rate"), tx.get("base_amount")
+    rate = tx.get("rate")
     if rate is not None and rate <= 0:
         problems.append("rate is not a positive number")
-    if rate is not None and base_amount is not None and abs((tx.get("amount") or 0) * rate - base_amount) > CONSISTENCY_TOLERANCE:
-        problems.append(f"Amount(base) {base_amount:g} doesn't match Amount x Rate ({(tx.get('amount') or 0) * rate:.2f})")
+    # No Amount(base)-vs-Amount×Rate consistency check here anymore: since
+    # Amount(base) became a real Excel formula (=IF(rate="","",amount*rate)),
+    # amount_value() can never read it back as a literal number for any row
+    # written under that convention, so `rate` and `base_amount` can no
+    # longer both be non-None at once for a current-format row — the
+    # inconsistency this used to catch is now structurally impossible to
+    # produce through the app, not just unreported.
     return problems
 
 
@@ -56,7 +59,10 @@ def detect_invalid_rows(ignored_signatures: set[str] | None = None) -> list[Inva
                 problems = _row_problems(schema, tx)
                 if not problems:
                     continue
-                signature = f"invalid|{year}|{tx['month']}|{tx['_row']}"
+                # Amount in the signature too -- see core/duplicates.py's
+                # identical reasoning: a reused row number (after a delete)
+                # must not silently inherit an old ignore.
+                signature = f"invalid|{year}|{tx['month']}|{tx['_row']}|{round(tx.get('amount') or 0.0, 2)}"
                 if signature in ignored_signatures:
                     continue
                 found.append(InvalidRow(signature=signature, year=year, schema=schema, tx=tx, problems=problems))

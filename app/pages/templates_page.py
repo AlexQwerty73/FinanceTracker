@@ -2,19 +2,41 @@
 app/pages/templates_page.py — TemplatesPage: build a custom workbook
 Template with a live, Excel-style table preview of the columns as you
 edit them — a full page (not a modal) so it's a comfortable place to
-experiment, reachable any time from the sidebar. Saved templates then show
-up in the Settings dialog's "Create New File" tab's layout picker.
+experiment, reachable via Settings → Templates (app/pages/settings_page.py).
+Saving emits template_saved so the Settings page's "Create New File" tab
+can refresh its layout picker immediately.
+
+Layout is a three-pane body, each pane independently scrollable: a narrow
+mini-nav rail on the left (jump to / see at-a-glance which sections you've
+customized), the editable form in the middle, and the live preview pinned
+on the right — its own QScrollArea, so it never scrolls out of view no
+matter how far down the form is scrolled (the single biggest complaint
+against the old one-column layout, where scrolling to "Types" or below
+lost the preview entirely).
 
 Interaction design is deliberately "direct manipulation" rather than
 select-then-click-a-button: columns are added by clicking a "+ Date" style
 pill and removed by clicking an inline ✕ next to that exact row; the
-required Category/Type/Amount columns are visibly locked (no ✕, a
-"required" tag) so it's obvious at a glance why they can't be dragged out.
-Types combine the list and the Income/Expense/Cash-in role assignment into
-one row each (a per-row role dropdown) instead of a separate list plus
-three "which one is X" combos elsewhere on the page — picking "Income" for
-one row automatically un-picks it from whichever row had it before, so
-there's never a way to end up with two "Income" types by accident.
+required Category/Type/Amount columns show a lock icon instead (no ✕, no
+separate tag box) so it's obvious at a glance why they can't be dragged
+out. Optional columns render as ordered, squarish drag-tags (order and
+lock-state matter); Categories/Payment types/Currencies render as
+unordered, fully-rounded pill chips in a wrapping FlowLayout — the two
+shapes are deliberately different, not just decorative, since only
+Columns has a meaningful order.
+
+Categories and Investments share one card: each category is a chip with
+an inline star toggle — starring a category marks it as counting toward
+"Invest" on the Dashboard (exactly `invest_categories`), no more duplicate
+list shown twice.
+
+Types combine the list and the Income/Expense/Cash-in role assignment
+into one row each: a neutral (uncolored) name field plus a 4-button
+segmented role control (Income/Expense/Cash-in/Other), the active option
+filled in that role's color, with a matching thin color bar down the
+row's left edge as a second cue. Picking a role that's already taken
+auto-clears it from whichever row had it, so there's never a way to end
+up with two "Income" types by accident.
 
 The preview shows the *whole picture*, not just an echo of the fields you
 can edit: alongside the sample rows it shows the row of month tabs every
@@ -23,13 +45,6 @@ Cash/Card) computed the same way DynamicSchema.month_summary() computes it
 for a real file — including the fact that cash tracking only kicks in for
 expenses paid with a payment option literally named "Cash", which is
 otherwise an easy thing to miss.
-
-Investing is tracked the same way Schema2025/Schema2026 track it: a fixed
-set of categories (e.g. Crypto, Stocks) counts toward "Invest" on the
-Dashboard regardless of whether the transaction was typed as Income or
-Expense. The Investments card lets you check which of your categories
-those are — it stays in sync with the Categories list automatically (a
-removed category disappears from the checklist too).
 
 Always saves as a NEW template (never mutates one in place), even when
 "Start from" loads an existing one's values as a starting point — editing
@@ -59,7 +74,7 @@ from core.themes import FIELD_HEIGHT, c, font_size, radius
 
 from ..components.transaction_fields import field_label, input_style
 from ..components.widgets import (
-    NoWheelComboBox, bordered_box, card as _base_card, primary_button, scrollable_area,
+    FlowLayout, NoWheelComboBox, bordered_box, card as _base_card, primary_button, scrollable_area,
 )
 
 _PREVIEW_ROWS = 4
@@ -70,7 +85,26 @@ _ROLE_NONE = "(no special meaning)"
 _ROLE_INCOME = "Income"
 _ROLE_EXPENSE = "Expense"
 _ROLE_CASH_IN = "Cash-in transfer"
-_TYPE_ROLE_OPTIONS = [_ROLE_NONE, _ROLE_INCOME, _ROLE_EXPENSE, _ROLE_CASH_IN]
+_TYPE_ROLE_OPTIONS = [_ROLE_INCOME, _ROLE_EXPENSE, _ROLE_CASH_IN, _ROLE_NONE]
+_TYPE_ROLE_SHORT = {_ROLE_INCOME: "Income", _ROLE_EXPENSE: "Expense", _ROLE_CASH_IN: "Cash-in", _ROLE_NONE: "Other"}
+_TYPE_ROLE_COLOR = {_ROLE_INCOME: c("income_c"), _ROLE_EXPENSE: c("expense_c"), _ROLE_CASH_IN: c("invest_c"), _ROLE_NONE: c("t3")}
+
+# Mini-nav sections, in form order — each maps to the card widget added under
+# the same key in TemplatesPage._section_widgets, and to a _is_<key>_dirty
+# predicate deciding whether its status dot lights up.
+_NAV_SECTIONS = [
+    ("name", "Name"), ("columns", "Columns"), ("categories", "Categories"),
+    ("types", "Types"), ("payment", "Payment types"), ("currency", "Currencies"),
+]
+
+
+def _tint(hex_color: str, alpha: int) -> str:
+    """hex_color ('#rrggbb') -> 'rgba(r,g,b,alpha)' — the palette only has
+    solid role colors (income_c/expense_c/invest_c), not pre-mixed
+    translucent variants like btn_bg/btn_bd, so segmented role buttons mix
+    their own on the fly."""
+    r, g, b = int(hex_color[1:3], 16), int(hex_color[3:5], 16), int(hex_color[5:7], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 
 def _helper_text(text: str) -> QLabel:
@@ -128,6 +162,20 @@ def _remove_btn(tooltip: str = "Remove") -> QPushButton:
     return btn
 
 
+def _star_btn(active: bool, tooltip: str) -> QPushButton:
+    btn = QPushButton()
+    btn.setIcon(icon("star" if active else "star-outline", c("invest_c") if active else c("t3")))
+    btn.setIconSize(QSize(13, 13))
+    btn.setFixedSize(22, 22)
+    btn.setToolTip(tooltip)
+    btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+    btn.setStyleSheet(f"""
+        QPushButton {{ background:transparent; border:none; border-radius:{radius('sm') - 1}px; }}
+        QPushButton:hover {{ background:{c('in_bg')}; }}
+    """)
+    return btn
+
+
 def _stat_chip() -> tuple[QWidget, QLabel, QLabel]:
     """A small 'Income / 1 500.00'-style readout used in the totals strip."""
     box = bordered_box(c("in_bg"), c("in_bd"), radius=radius("lg"))
@@ -145,28 +193,31 @@ def _stat_chip() -> tuple[QWidget, QLabel, QLabel]:
     return box, title_lbl, value_lbl
 
 
-class _ListEditor(QWidget):
-    """A tag-list editor: type a value, hit Add/Enter, or click the ✕ next
-    to any row to remove it directly — no select-then-click-Remove step.
-    Used for Categories and Payment types."""
+class _ChipListEditor(QWidget):
+    """A wrapping row of fully-rounded pill chips — type a value, hit
+    Add/Enter, or click a chip's inline ✕ to remove it directly. Used for
+    Payment types and Currencies (unordered sets — a FlowLayout, unlike
+    Columns' ordered drag-list). `star=True` (Categories only) adds an
+    inline star toggle per chip for investment-category marking."""
 
     changed = pyqtSignal()
 
-    def __init__(self, placeholder: str, parent=None):
+    def __init__(self, placeholder: str, parent=None, star: bool = False):
         super().__init__(parent)
+        self._star = star
+        self._values: list[str] = []
+        self._starred: set[str] = set()
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.list_widget.setFixedHeight(96)
-        self.list_widget.setSpacing(2)
-        self.list_widget.setStyleSheet(f"""
-            QListWidget {{ background:{c('in_bg')}; border:1px solid {c('in_bd')}; border-radius:8px; }}
-            QListWidget::item {{ border:none; }}
-        """)
-        lay.addWidget(self.list_widget)
+        self._chip_area = QWidget()
+        self._flow = FlowLayout(self._chip_area, margin=0, spacing=6)
+        lay.addWidget(self._chip_area)
+
+        self._empty_hint = _helper_text("Nothing added yet — use the field below.")
+        lay.addWidget(self._empty_hint)
 
         row = QHBoxLayout()
         self._input = QLineEdit()
@@ -180,60 +231,82 @@ class _ListEditor(QWidget):
         row.addWidget(add_btn)
         lay.addLayout(row)
 
-    def _row_widget(self, text: str) -> QWidget:
-        w = QWidget()
-        h = QHBoxLayout(w)
-        h.setContentsMargins(8, 0, 4, 0)
-        h.setSpacing(6)
+    def _chip_widget(self, text: str) -> QWidget:
+        chip = bordered_box(c("in_bg"), c("in_bd"), radius=13)
+        h = QHBoxLayout(chip)
+        h.setContentsMargins(10, 3, 4, 3)
+        h.setSpacing(2)
+        if self._star:
+            star = _star_btn(text in self._starred, f'Mark "{text}" as investing' if text not in self._starred else f'Unmark "{text}"')
+            star.clicked.connect(lambda _c=False, t=text: self._toggle_star(t))
+            h.addWidget(star)
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
-        h.addWidget(lbl, 1)
+        lbl.setStyleSheet(f"color:{c('invest_c') if text in self._starred else c('t1')}; background:transparent;")
+        h.addWidget(lbl)
         rm = _remove_btn(f'Remove "{text}"')
-        rm.clicked.connect(lambda: self._remove(text))
+        rm.clicked.connect(lambda _c=False, t=text: self._remove(t))
         h.addWidget(rm)
-        return w
+        return chip
 
-    def _add_item(self, text: str) -> None:
-        item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, text)
-        item.setSizeHint(QSize(0, 28))
-        self.list_widget.addItem(item)
-        self.list_widget.setItemWidget(item, self._row_widget(text))
+    def _rebuild(self) -> None:
+        while self._flow.count():
+            item = self._flow.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        for v in self._values:
+            self._flow.addWidget(self._chip_widget(v))
+        self._chip_area.setVisible(bool(self._values))
+        self._empty_hint.setVisible(not self._values)
+        self._flow.update()
+
+    def _toggle_star(self, text: str) -> None:
+        if text in self._starred:
+            self._starred.discard(text)
+        else:
+            self._starred.add(text)
+        self._rebuild()
+        self.changed.emit()
 
     def _remove(self, text: str) -> None:
-        for i in range(self.list_widget.count()):
-            if self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) == text:
-                self.list_widget.takeItem(i)
-                break
+        self._values = [v for v in self._values if v != text]
+        self._starred.discard(text)
+        self._rebuild()
         self.changed.emit()
 
     def _on_add(self) -> None:
         text = self._input.text().strip()
-        if not text or text in self.values():
+        if not text or text in self._values:
             self._input.clear()
             return
-        self._add_item(text)
+        self._values.append(text)
         self._input.clear()
+        self._rebuild()
         self.changed.emit()
 
     def values(self) -> list[str]:
-        return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
+        return list(self._values)
 
-    def set_values(self, values: list[str]) -> None:
-        self.list_widget.clear()
-        for v in values:
-            self._add_item(v)
-        self.changed.emit()
+    def starred(self) -> list[str]:
+        return [v for v in self._values if v in self._starred]
+
+    def set_values(self, values: list[str], starred: list[str] | None = None) -> None:
+        self._values = list(values)
+        self._starred = set(starred or []) & set(values)
+        self._rebuild()
 
 
 class _TypesEditor(QWidget):
     """Types and their Income/Expense/Cash-in role live in one place: each
-    row is a name plus a role dropdown, instead of a separate type list and
-    three "which type means X" combos elsewhere on the page. Picking a role
-    that's already taken automatically clears it from whichever row had it,
-    so Income/Expense/Cash-in can never point at two rows at once. The
-    first type added is auto-assigned Income, the second Expense, since
-    that's what almost everyone wants for their first two entries."""
+    row is a neutral (uncolored) name plus a 4-button segmented role
+    control, instead of a separate type list and three "which type means
+    X" combos elsewhere on the page — and instead of a dropdown whose text
+    used to visually collide with the name label for the default "Income"/
+    "Expense" rows. Picking a role that's already taken automatically
+    clears it from whichever row had it, so Income/Expense/Cash-in can
+    never point at two rows at once. The first type added is auto-assigned
+    Income, the second Expense, since that's what almost everyone wants for
+    their first two entries."""
 
     changed = pyqtSignal()
 
@@ -247,8 +320,8 @@ class _TypesEditor(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.list_widget.setFixedHeight(150)
-        self.list_widget.setSpacing(2)
+        self.list_widget.setFixedHeight(170)
+        self.list_widget.setSpacing(3)
         self.list_widget.setStyleSheet(f"""
             QListWidget {{ background:{c('in_bg')}; border:1px solid {c('in_bd')}; border-radius:8px; }}
             QListWidget::item {{ border:none; }}
@@ -267,29 +340,45 @@ class _TypesEditor(QWidget):
         row.addWidget(add_btn)
         lay.addLayout(row)
 
+    def _role_btn(self, name: str, role: str, active: bool) -> QPushButton:
+        color = _TYPE_ROLE_COLOR[role]
+        btn = QPushButton(_TYPE_ROLE_SHORT[role])
+        btn.setFixedHeight(24)
+        btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        if active:
+            btn.setStyleSheet(f"""
+                QPushButton {{ background:{_tint(color, 30)}; color:{color};
+                    border:1px solid {_tint(color, 90)}; border-radius:{radius('sm')}px; font-weight:bold; }}
+            """)
+        else:
+            btn.setStyleSheet(f"""
+                QPushButton {{ background:transparent; color:{c('t3')};
+                    border:1px solid {c('in_bd')}; border-radius:{radius('sm')}px; }}
+                QPushButton:hover {{ color:{c('t2')}; border-color:{c('t2')}; }}
+            """)
+        btn.clicked.connect(lambda _c=False, n=name, r=role: self._set_role(n, r))
+        return btn
+
     def _row_widget(self, name: str, role: str) -> QWidget:
         w = QWidget()
         h = QHBoxLayout(w)
-        h.setContentsMargins(8, 0, 4, 0)
-        h.setSpacing(6)
+        h.setContentsMargins(0, 0, 4, 0)
+        h.setSpacing(8)
+
+        bar = QLabel()
+        bar.setFixedWidth(4)
+        bar.setStyleSheet(f"background:{_TYPE_ROLE_COLOR[role]}; border-radius:2px;")
+        h.addWidget(bar)
+
         lbl = QLabel(name)
-        if role == _ROLE_INCOME:
-            lbl.setStyleSheet(f"color:{c('income_c')}; background:transparent; font-weight:bold;")
-        elif role == _ROLE_EXPENSE:
-            lbl.setStyleSheet(f"color:{c('expense_c')}; background:transparent; font-weight:bold;")
-        else:
-            lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
+        lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         h.addWidget(lbl, 1)
 
-        combo = NoWheelComboBox()
-        combo.addItems(_TYPE_ROLE_OPTIONS)
-        combo.setCurrentText(role)
-        combo.setFixedHeight(26)
-        combo.setFixedWidth(160)
-        combo.setStyleSheet(input_style())
-        combo.setToolTip("What this type means for Dashboard totals.")
-        combo.currentTextChanged.connect(lambda new_role, n=name: self._set_role(n, new_role))
-        h.addWidget(combo)
+        roles_row = QHBoxLayout()
+        roles_row.setSpacing(4)
+        for role_opt in _TYPE_ROLE_OPTIONS:
+            roles_row.addWidget(self._role_btn(name, role_opt, role_opt == role))
+        h.addLayout(roles_row)
 
         rm = _remove_btn(f'Remove "{name}"')
         rm.clicked.connect(lambda _checked=False, n=name: self._remove(n))
@@ -300,7 +389,7 @@ class _TypesEditor(QWidget):
         self.list_widget.clear()
         for r in self._rows:
             item = QListWidgetItem()
-            item.setSizeHint(QSize(0, 32))
+            item.setSizeHint(QSize(0, 36))
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, self._row_widget(r["name"], r["role"]))
 
@@ -362,82 +451,15 @@ class _TypesEditor(QWidget):
         self._rebuild()
 
 
-class _InvestCategoriesEditor(QWidget):
-    """A checklist of the current Categories — tick the ones that count as
-    investing (e.g. Crypto, Stocks). Always mirrors whatever's in the
-    Categories card: call refresh_categories() whenever that list changes
-    and a removed category quietly drops off here too, so this can never
-    point at a category that no longer exists."""
-
-    changed = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._checked: set[str] = set()
-        self._categories: list[str] = []
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.list_widget.setFixedHeight(84)
-        self.list_widget.setSpacing(2)
-        self.list_widget.setStyleSheet(f"""
-            QListWidget {{ background:{c('in_bg')}; border:1px solid {c('in_bd')}; border-radius:8px; }}
-            QListWidget::item {{ border:none; padding:2px 6px; }}
-        """)
-        self.list_widget.itemChanged.connect(self._on_item_changed)
-        lay.addWidget(self.list_widget)
-
-        self._empty_hint = _helper_text("Add a category above first, then check it off here if it's investing.")
-        lay.addWidget(self._empty_hint)
-
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
-        name = item.data(Qt.ItemDataRole.UserRole)
-        if item.checkState() == Qt.CheckState.Checked:
-            self._checked.add(name)
-        else:
-            self._checked.discard(name)
-        self.changed.emit()
-
-    def refresh_categories(self, categories: list[str]) -> None:
-        self._categories = list(categories)
-        self._checked &= set(categories)
-        self.list_widget.blockSignals(True)
-        self.list_widget.clear()
-        for cat in categories:
-            item = QListWidgetItem(cat)
-            item.setData(Qt.ItemDataRole.UserRole, cat)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if cat in self._checked else Qt.CheckState.Unchecked)
-            self.list_widget.addItem(item)
-        self.list_widget.blockSignals(False)
-        self.list_widget.setVisible(bool(categories))
-        self._empty_hint.setVisible(not categories)
-
-    def values(self) -> list[str]:
-        return [cat for cat in self._categories if cat in self._checked]
-
-    def set_checked(self, checked: list[str]) -> None:
-        self._checked = set(checked)
-
-
 class TemplatesPage(QWidget):
+    template_saved = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
         outer_lay = QVBoxLayout(self)
-        outer_lay.setContentsMargins(0, 0, 0, 0)
-
-        content = QWidget()
-        content.setStyleSheet("background:transparent;")
-        outer_lay.addWidget(scrollable_area(content))
-
-        lay = QVBoxLayout(content)
-        lay.setContentsMargins(4, 4, 4, 20)
-        lay.setSpacing(16)
+        outer_lay.setContentsMargins(4, 4, 4, 4)
+        outer_lay.setSpacing(12)
 
         header_row = QHBoxLayout()
         hdr = QLabel("Templates")
@@ -445,7 +467,7 @@ class TemplatesPage(QWidget):
         hdr.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         header_row.addWidget(hdr)
         header_row.addStretch()
-        lay.addLayout(header_row)
+        outer_lay.addLayout(header_row)
 
         desc = QLabel(
             "Design a workbook layout — which columns, in what order — and see it update live on the right. "
@@ -453,9 +475,82 @@ class TemplatesPage(QWidget):
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color:{c('t2')}; background:transparent;")
-        lay.addWidget(desc)
+        outer_lay.addWidget(desc)
 
-        # ── Start from ────────────────────────────────────────────────
+        # ── Three-pane body: mini-nav | form | live preview ─────────────
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        outer_lay.addLayout(body, 1)
+
+        self._section_widgets: dict[str, QWidget] = {}
+        self._nav_dots: dict[str, QLabel] = {}
+        self._build_mini_nav(body)
+        self._build_form(body)
+        self._build_preview(body)
+
+        self._load_from(Template.new_blank())
+        self._refresh_start_combo()
+
+    # ── mini-nav ─────────────────────────────────────────────────────────
+
+    def _build_mini_nav(self, body: QHBoxLayout) -> None:
+        nav_box = bordered_box(c("panel_bg"), c("panel_bd"), radius=radius("xl"))
+        nav_box.setFixedWidth(150)
+        nav_lay = QVBoxLayout(nav_box)
+        nav_lay.setContentsMargins(8, 12, 8, 12)
+        nav_lay.setSpacing(2)
+
+        self._nav_btns: dict[str, QPushButton] = {}
+        for key, label in _NAV_SECTIONS:
+            row_w = QWidget()
+            row = QHBoxLayout(row_w)
+            row.setContentsMargins(4, 0, 4, 0)
+            row.setSpacing(6)
+            dot = QLabel()
+            dot.setFixedSize(7, 7)
+            self._style_dot(dot, False)
+            row.addWidget(dot)
+            btn = QPushButton(label)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.setFixedHeight(28)
+            btn.setStyleSheet(f"""
+                QPushButton {{ background:transparent; color:{c('t2')}; border:none;
+                    text-align:left; padding:0 4px; }}
+                QPushButton:hover {{ color:{c('ac')}; }}
+            """)
+            btn.clicked.connect(lambda _c=False, k=key: self._jump_to(k))
+            row.addWidget(btn, 1)
+            nav_lay.addWidget(row_w)
+            self._nav_btns[key] = btn
+            self._nav_dots[key] = dot
+        nav_lay.addStretch()
+        body.addWidget(nav_box)
+
+    def _style_dot(self, dot: QLabel, active: bool) -> None:
+        color = c("ac") if active else "transparent"
+        border = c("ac") if active else c("t3")
+        dot.setStyleSheet(f"background:{color}; border:1px solid {border}; border-radius:3px;")
+
+    def _jump_to(self, key: str) -> None:
+        target = self._section_widgets.get(key)
+        if target is not None:
+            self._form_scroll.ensureWidgetVisible(target, yMargin=40)
+
+    # ── form (scrollable, with a sticky footer outside the scroll area) ──
+
+    def _build_form(self, body: QHBoxLayout) -> None:
+        form_col = QVBoxLayout()
+        form_col.setSpacing(0)
+
+        content = QWidget()
+        content.setStyleSheet("background:transparent;")
+        self._form_scroll = scrollable_area(content)
+        form_col.addWidget(self._form_scroll, 1)
+
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(4, 4, 12, 20)
+        lay.setSpacing(16)
+
         start_box, start_lay = _card("Start from (optional)")
         start_row = QHBoxLayout()
         self._start_combo = NoWheelComboBox()
@@ -473,31 +568,25 @@ class TemplatesPage(QWidget):
         start_lay.addWidget(note)
         lay.addWidget(start_box)
 
-        # ── Editor + live preview, side by side ─────────────────────────
-        body = QHBoxLayout()
-        body.setSpacing(16)
-
-        editor_col = QVBoxLayout()
-        editor_col.setSpacing(16)
-
-        name_box, name_lay = _card("1 · Template name")
+        name_box, name_lay = _card("Template name")
         self._name_field = QLineEdit("My Template")
         self._name_field.setFixedHeight(FIELD_HEIGHT)
         self._name_field.setStyleSheet(input_style())
         self._name_field.textChanged.connect(self._refresh_preview)
         name_lay.addWidget(self._name_field)
-        editor_col.addWidget(name_box)
+        lay.addWidget(name_box)
+        self._section_widgets["name"] = name_box
 
         cols_box, cols_lay = _card(
-            "2 · Columns",
-            "Category, Type and Amount are always included and locked in place — you can "
-            "see them marked \"required\" below. Click a button to add Date, Payment type "
-            "or Notes; drag any row to reorder; click ✕ to remove an optional one.",
+            "Columns",
+            "Category, Type and Amount are always included — shown locked below with a "
+            "padlock icon. Click a button to add Date, Payment type or Notes; drag any row "
+            "to reorder; click ✕ to remove an optional one.",
         )
         self._columns_list = QListWidget()
         self._columns_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._columns_list.setFixedHeight(150)
-        self._columns_list.setSpacing(2)
+        self._columns_list.setSpacing(3)
         self._columns_list.setToolTip("Drag rows up or down to reorder — this is the left-to-right column order in the file.")
         self._columns_list.setStyleSheet(f"""
             QListWidget {{ background:{c('in_bg')}; border:1px solid {c('in_bd')}; border-radius:8px; }}
@@ -513,56 +602,53 @@ class TemplatesPage(QWidget):
         cols_lay.addLayout(self._add_col_pills_row)
         self._add_col_hint = _helper_text("All optional columns are already included.")
         cols_lay.addWidget(self._add_col_hint)
-        editor_col.addWidget(cols_box)
+        lay.addWidget(cols_box)
+        self._section_widgets["columns"] = cols_box
 
         cats_box, cats_lay = _card(
-            "3 · Categories", "What you'll pick from when logging a transaction, e.g. Food, Rent, Salary.",
+            "Categories",
+            "What you'll pick from when logging a transaction, e.g. Food, Rent, Salary. "
+            "Click the star on a category to track it as \"Invest\" on the Dashboard "
+            "regardless of whether it's logged as Income or Expense.",
         )
-        self._categories_editor = _ListEditor("New category…")
-        self._categories_editor.changed.connect(self._on_categories_changed)
+        self._categories_editor = _ChipListEditor("New category…", star=True)
+        self._categories_editor.changed.connect(self._refresh_preview)
         cats_lay.addWidget(self._categories_editor)
-        editor_col.addWidget(cats_box)
-
-        invest_box, invest_lay = _card(
-            "4 · Investments (optional)",
-            "Check which categories count as investing, e.g. Crypto, Stocks. Tracked as "
-            "\"Invest\" on the Dashboard regardless of whether it's Income or Expense type.",
-        )
-        self._invest_editor = _InvestCategoriesEditor()
-        self._invest_editor.changed.connect(self._refresh_preview)
-        invest_lay.addWidget(self._invest_editor)
-        editor_col.addWidget(invest_box)
+        lay.addWidget(cats_box)
+        self._section_widgets["categories"] = cats_box
 
         types_box, types_lay = _card(
-            "5 · Types",
-            "Add every transaction type you use, then pick its role from the dropdown on "
-            "the right of each row — Income, Expense, or Cash-in transfer. Anything left "
-            "as \"no special meaning\" is still usable, it just isn't totaled specially.",
+            "Types",
+            "Add every transaction type you use, then pick its role with the buttons on "
+            "the right of each row — Income, Expense, or Cash-in. Anything left as "
+            "\"Other\" is still usable, it just isn't totaled specially.",
         )
         self._types_editor = _TypesEditor()
         self._types_editor.changed.connect(self._refresh_preview)
         types_lay.addWidget(self._types_editor)
-        editor_col.addWidget(types_box)
+        lay.addWidget(types_box)
+        self._section_widgets["types"] = types_box
 
         self._payment_box, payment_lay = _card(
-            "6 · Payment types",
+            "Payment types",
             'How each transaction was paid, e.g. Cash, Card. Name one of them exactly '
             '"Cash" to enable cash-vs-card tracking on the Dashboard.',
         )
-        self._payment_editor = _ListEditor("New payment type…")
+        self._payment_editor = _ChipListEditor("New payment type…")
         self._payment_editor.changed.connect(self._refresh_preview)
         payment_lay.addWidget(self._payment_editor)
-        editor_col.addWidget(self._payment_box)
+        lay.addWidget(self._payment_box)
+        self._section_widgets["payment"] = self._payment_box
 
         self._currency_box, currency_lay = _card(
-            "7 · Currencies (optional)",
+            "Currencies (optional)",
             "Which currencies you enter amounts in, e.g. CZK, USD. Pick one as the base "
             "currency — that's what Dashboard/Analytics totals convert everything into. "
             "Exchange rates themselves aren't set here — they live in the file's own Lists "
             "sheet and are edited directly in Excel, so the preview totals below don't "
             "convert between currencies.",
         )
-        self._currency_editor = _ListEditor("New currency, e.g. USD…")
+        self._currency_editor = _ChipListEditor("New currency, e.g. USD…")
         self._currency_editor.changed.connect(self._on_currencies_changed)
         currency_lay.addWidget(self._currency_editor)
         currency_lay.addWidget(field_label("Base currency"))
@@ -571,12 +657,37 @@ class TemplatesPage(QWidget):
         self._base_currency_combo.setStyleSheet(input_style())
         self._base_currency_combo.currentTextChanged.connect(self._refresh_preview)
         currency_lay.addWidget(self._base_currency_combo)
-        editor_col.addWidget(self._currency_box)
+        lay.addWidget(self._currency_box)
+        self._section_widgets["currency"] = self._currency_box
 
-        body.addLayout(editor_col, 1)
+        lay.addStretch()
 
-        # ── Live preview ─────────────────────────────────────────────────
-        preview_col = QVBoxLayout()
+        # ── Sticky save footer — pinned under the scroll area, not full app width ──
+        footer = QWidget()
+        footer_lay = QVBoxLayout(footer)
+        footer_lay.setContentsMargins(4, 10, 12, 0)
+        footer_lay.setSpacing(6)
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setFont(QFont("Segoe UI", font_size("label")))
+        footer_lay.addWidget(self._status)
+        save_btn = primary_button("Save as New Template")
+        save_btn.clicked.connect(self._on_save)
+        footer_lay.addWidget(save_btn)
+        form_col.addWidget(footer)
+
+        body.addLayout(form_col, 1)
+
+    # ── live preview (own scroll area, independent of the form) ──────────
+
+    def _build_preview(self, body: QHBoxLayout) -> None:
+        preview_content = QWidget()
+        preview_content.setStyleSheet("background:transparent;")
+        preview_scroll = scrollable_area(preview_content)
+        preview_scroll.setMinimumWidth(360)
+
+        preview_col = QVBoxLayout(preview_content)
+        preview_col.setContentsMargins(4, 4, 4, 20)
         preview_col.setSpacing(16)
 
         preview_box, preview_lay = _card(
@@ -641,21 +752,8 @@ class TemplatesPage(QWidget):
 
         preview_col.addWidget(preview_box)
         preview_col.addStretch()
-        body.addLayout(preview_col, 1)
 
-        lay.addLayout(body)
-
-        self._status = QLabel("")
-        self._status.setWordWrap(True)
-        self._status.setFont(QFont("Segoe UI", font_size("label")))
-        lay.addWidget(self._status)
-
-        save_btn = primary_button("Save as New Template")
-        save_btn.clicked.connect(self._on_save)
-        lay.addWidget(save_btn)
-
-        self._load_from(Template.new_blank())
-        self._refresh_start_combo()
+        body.addWidget(preview_scroll, 1)
 
     # ── loading a starting point ────────────────────────────────────────
 
@@ -681,13 +779,9 @@ class TemplatesPage(QWidget):
         self._columns_list.clear()
         for role in template.columns:
             self._add_column_item(role)
-        self._invest_editor.set_checked(template.invest_categories or [])
-        self._categories_editor.set_values(template.categories)
+        self._categories_editor.set_values(template.categories, template.invest_categories or [])
         self._types_editor.set_from(template.types, template.income_type, template.expense_type, template.cash_in_type)
-        if template.payment_types:
-            self._payment_editor.set_values(template.payment_types)
-        else:
-            self._payment_editor.set_values([])
+        self._payment_editor.set_values(template.payment_types or [])
         if template.currencies:
             self._currency_editor.set_values(template.currencies)
             if template.base_currency in template.currencies:
@@ -705,9 +799,9 @@ class TemplatesPage(QWidget):
         return [self._columns_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self._columns_list.count())]
 
     def _column_row_widget(self, role: str) -> QWidget:
-        w = QWidget()
+        w = bordered_box(c("in_bg"), c("in_bd"), radius=radius("sm"))
         h = QHBoxLayout(w)
-        h.setContentsMargins(8, 0, 4, 0)
+        h.setContentsMargins(8, 2, 4, 2)
         h.setSpacing(6)
         handle = QLabel()
         handle.setPixmap(icon("drag-handle", c("t3")).pixmap(QSize(14, 14)))
@@ -717,10 +811,11 @@ class TemplatesPage(QWidget):
         lbl.setStyleSheet(f"color:{c('t1')}; background:transparent;")
         h.addWidget(lbl, 1)
         if role in REQUIRED_ROLES:
-            tag = QLabel("required")
-            tag.setFont(QFont("Segoe UI", font_size("micro") - 1))
-            tag.setStyleSheet(f"color:{c('t3')}; background:{c('bg')}; border-radius:4px; padding:2px 8px;")
-            h.addWidget(tag)
+            lock = QLabel()
+            lock.setPixmap(icon("lock", c("t3")).pixmap(QSize(13, 13)))
+            lock.setStyleSheet("background:transparent;")
+            lock.setToolTip("Required — can't be removed")
+            h.addWidget(lock)
         else:
             rm = _remove_btn(f'Remove the {ROLE_LABELS[role]} column')
             rm.clicked.connect(lambda _checked=False, role=role: self._on_remove_column(role))
@@ -793,10 +888,6 @@ class TemplatesPage(QWidget):
         self._base_currency_combo.blockSignals(False)
         self._refresh_preview()
 
-    def _on_categories_changed(self) -> None:
-        self._invest_editor.refresh_categories(self._categories_editor.values())
-        self._refresh_preview()
-
     # ── live preview ─────────────────────────────────────────────────────
 
     def _refresh_preview(self, *_args) -> None:
@@ -815,7 +906,7 @@ class TemplatesPage(QWidget):
         income_type = self._types_editor.income_type() or ""
         expense_type = self._types_editor.expense_type() or ""
         cash_in_type = self._types_editor.cash_in_type()
-        invest_categories = set(self._invest_editor.values())
+        invest_categories = set(self._categories_editor.starred())
         has_payment_col = ROLE_PAYMENT in columns
         has_currency_col = ROLE_CURRENCY in columns
 
@@ -883,6 +974,8 @@ class TemplatesPage(QWidget):
         self._set_summary_chip("cash", cash if has_tracking else None)
         self._set_summary_chip("card", (balance - cash) if has_tracking else None)
 
+        self._refresh_nav_dots()
+
     def _set_summary_chip(self, key: str, value: float | None) -> None:
         chip, _title_lbl, value_lbl = self._summary_chips[key]
         if value is None:
@@ -890,6 +983,25 @@ class TemplatesPage(QWidget):
             return
         chip.setVisible(True)
         value_lbl.setText(f"{value:,.2f}")
+
+    # ── mini-nav status dots ─────────────────────────────────────────────
+
+    def _refresh_nav_dots(self) -> None:
+        blank = Template.new_blank()
+        dirty = {
+            "name": self._name_field.text().strip() != blank.name,
+            "columns": self._current_columns() != blank.columns,
+            "categories": (self._categories_editor.values() != blank.categories
+                           or self._categories_editor.starred() != blank.invest_categories),
+            "types": (self._types_editor.types() != blank.types
+                      or self._types_editor.income_type() != blank.income_type
+                      or self._types_editor.expense_type() != blank.expense_type
+                      or self._types_editor.cash_in_type() != blank.cash_in_type),
+            "payment": bool(self._payment_editor.values()),
+            "currency": bool(self._currency_editor.values()),
+        }
+        for key, is_dirty in dirty.items():
+            self._style_dot(self._nav_dots[key], is_dirty)
 
     # ── save ─────────────────────────────────────────────────────────────
 
@@ -907,7 +1019,7 @@ class TemplatesPage(QWidget):
         template.expense_type = self._types_editor.expense_type() or ""
         template.cash_in_type = self._types_editor.cash_in_type()
         template.payment_types = self._payment_editor.values() if ROLE_PAYMENT in template.columns else None
-        template.invest_categories = self._invest_editor.values()
+        template.invest_categories = self._categories_editor.starred()
         if ROLE_CURRENCY in template.columns:
             template.currencies = self._currency_editor.values()
             template.base_currency = self._base_currency_combo.currentText() or None
@@ -923,4 +1035,16 @@ class TemplatesPage(QWidget):
 
         template_model.save_template(template)
         self._refresh_start_combo()
-        self._set_status(f'Saved "{template.name}" — it now shows up when creating a new file.', error=False)
+        status = f'Saved "{template.name}" — it now shows up when creating a new file.'
+        # Cash tracking only ever fires for a payment type literally named
+        # "Cash" (schema_dynamic.py/schema_2026.py both hardcode the exact
+        # string) -- a template that defines a cash-in type but whose own
+        # payment list doesn't include it would never see its cash total
+        # move, a real gotcha this app doesn't otherwise catch anywhere.
+        if template.cash_in_type and template.payment_types and "Cash" not in template.payment_types:
+            status += (
+                ' Note: this template has a cash-in type but no payment option literally named '
+                '"Cash" — cash tracking on the Dashboard will never move for it.'
+            )
+        self._set_status(status, error=False)
+        self.template_saved.emit()

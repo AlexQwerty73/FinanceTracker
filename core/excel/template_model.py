@@ -145,11 +145,20 @@ def _load_all() -> list[dict]:
 
 def _save_all(items: list[dict]) -> None:
     TEMPLATES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TEMPLATES_PATH.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    # Atomic: write to a sibling temp file, then rename over the real path,
+    # so a crash mid-write can't leave a half-written, unparseable file.
+    tmp_path = TEMPLATES_PATH.with_suffix(".tmp.json")
+    tmp_path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    tmp_path.replace(TEMPLATES_PATH)
 
 
 def list_templates() -> list[Template]:
-    return [Template(**item) for item in _load_all()]
+    # Filter to known fields -- a templates.json written by a newer app
+    # version (with a field this build doesn't know about yet) would
+    # otherwise crash Template(**item) entirely, taking down every
+    # template, not just the one with the unknown field.
+    known = Template.__dataclass_fields__.keys()
+    return [Template(**{k: v for k, v in item.items() if k in known}) for item in _load_all()]
 
 
 def get_template(template_id: str) -> Template | None:

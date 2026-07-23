@@ -3,15 +3,83 @@ app/components/widgets.py — small reusable widget subclasses/helpers.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt
 from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import (
-    QComboBox, QFrame, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QComboBox, QFrame, QLabel, QLayout, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from core.themes import FIELD_HEIGHT, c, font_size, radius
 
 _box_seq = [0]
+
+
+class FlowLayout(QLayout):
+    """A layout that wraps its children left-to-right, wrapping to a new row
+    when the current one runs out of width — Qt has no built-in equivalent
+    (unlike CSS flex-wrap). Used for pill-chip rows (Categories, Payment
+    types, Currencies) where the item count/width isn't known ahead of
+    time, unlike Columns' fixed drag-orderable list."""
+
+    def __init__(self, parent=None, margin: int = 0, spacing: int = 6):
+        super().__init__(parent)
+        self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+        self._items: list = []
+
+    def addItem(self, item) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientation:
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        x, y = rect.x(), rect.y()
+        line_height = 0
+        spacing = self.spacing()
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + spacing
+            if next_x - spacing > rect.right() and line_height > 0:
+                x = rect.x()
+                y += line_height + spacing
+                next_x = x + hint.width() + spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y()
 
 
 class NoWheelComboBox(QComboBox):
